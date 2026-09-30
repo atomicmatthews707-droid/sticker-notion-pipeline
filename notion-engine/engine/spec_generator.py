@@ -83,7 +83,8 @@ def generate_spec(niche: str, dry_run: bool = False) -> dict:
 
     # Live mode
     client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-    model = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20240620")
+    # claude-sonnet-5-5 is the current model as of 2026-09-30; .env.example sets this
+    model = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
     
     prompt_path = os.path.join(os.path.dirname(__file__), "..", "prompts", "spec_generator.txt")
     with open(prompt_path, "r") as f:
@@ -91,18 +92,24 @@ def generate_spec(niche: str, dry_run: bool = False) -> dict:
         
     response = client.messages.create(
         model=model,
-        max_tokens=2048,
+        max_tokens=8192,
         system=system_prompt,
         messages=[
-            {"role": "user", "content": f"Generate a Notion template spec for the niche: {niche}. Output ONLY JSON."}
+            {"role": "user", "content": f"Generate a Notion template spec for the niche: {niche}. Output ONLY valid raw JSON."}
         ]
     )
     
-    # Extract JSON text
-    text = response.content[0].text
-    # Simple cleanup to remove potential markdown wrapping
+    # Extract text from response blocks (handling ThinkingBlock from extended thinking models)
+    text = ""
+    for block in response.content:
+        if getattr(block, "type", None) == "text" or hasattr(block, "text"):
+            text += block.text
+    text = text.strip()
+
     if "```json" in text:
-        text = text.split("```json")[1].split("```")[0]
+        text = text.split("```json", 1)[1].split("```", 1)[0]
+    elif "```" in text:
+        text = text.split("```", 1)[1].split("```", 1)[0]
     
     spec = json.loads(text.strip())
     

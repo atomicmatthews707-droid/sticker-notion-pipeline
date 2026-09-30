@@ -19,17 +19,17 @@ def process_niche(niche: str, dry_run: bool):
     
     print("1. Generating spec...")
     spec = generate_spec(niche, dry_run=dry_run)
-    with open(os.path.join(out_dir, "spec.json"), "w") as f:
+    with open(os.path.join(out_dir, "spec.json"), "w", encoding="utf-8") as f:
         json.dump(spec, f, indent=2)
         
     print("2. Generating listing...")
     listing = generate_listing(spec, dry_run=dry_run)
-    with open(os.path.join(out_dir, "listing.md"), "w") as f:
+    with open(os.path.join(out_dir, "listing.md"), "w", encoding="utf-8") as f:
         f.write(listing)
         
     print("3. Generating cover prompts...")
     prompts = generate_cover_prompts(spec, dry_run=dry_run)
-    with open(os.path.join(out_dir, "cover_prompts.txt"), "w") as f:
+    with open(os.path.join(out_dir, "cover_prompts.txt"), "w", encoding="utf-8") as f:
         f.write(prompts)
         
     if dry_run:
@@ -47,7 +47,7 @@ def process_niche(niche: str, dry_run: bool):
         skipped = result.get("skipped", [])
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        with open(os.path.join(out_dir, f"skipped_{timestamp}.json"), "w") as f:
+        with open(os.path.join(out_dir, f"skipped_{timestamp}.json"), "w", encoding="utf-8") as f:
             json.dump(skipped, f, indent=2)
             
         print(f"Success! Root URL: {result.get('root_url')}")
@@ -55,7 +55,7 @@ def process_niche(niche: str, dry_run: bool):
     # Append to catalog
     catalog_path = os.path.join("output", "catalog.csv")
     file_exists = os.path.exists(catalog_path)
-    with open(catalog_path, "a") as f:
+    with open(catalog_path, "a", encoding="utf-8") as f:
         if not file_exists:
             f.write("Niche,Slug,Status\n")
         f.write(f"{niche},{slug},Success\n")
@@ -78,7 +78,7 @@ def main():
     if args.niche:
         niches.append(args.niche)
     if args.niches_file:
-        with open(args.niches_file, "r") as f:
+        with open(args.niches_file, "r", encoding="utf-8") as f:
             lines = [l.strip() for l in f if l.strip()]
             niches.extend(lines)
             

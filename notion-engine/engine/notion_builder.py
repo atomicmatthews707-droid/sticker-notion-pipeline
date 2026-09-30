@@ -98,10 +98,9 @@ def build_template(spec: dict, token: str, parent_page_id: str) -> dict:
     def update_ds_prop(ds_id: str, db_name: str, prop_name: str, prop_schema: dict):
         try:
             _notion_request_with_retry(
-                client.request,
-                path=f"v1/data_sources/{ds_id}",
-                method="PATCH",
-                body={"properties": {prop_name: prop_schema}}
+                client.data_sources.update,
+                data_source_id=ds_id,
+                properties={prop_name: prop_schema}
             )
         except Exception as e:
             # AI Handoff: Log validation_error and skip instead of aborting build.
@@ -115,7 +114,10 @@ def build_template(spec: dict, token: str, parent_page_id: str) -> dict:
                 target_db = p.get("target_db")
                 if target_db in data_source_ids:
                     update_ds_prop(ds_id, db["name"], p["name"], {
-                        "relation": {"data_source_id": data_source_ids[target_db]}
+                        "relation": {
+                            "data_source_id": data_source_ids[target_db],
+                            "single_property": {}
+                        }
                     })
 
     # b) Formulas
@@ -145,72 +147,128 @@ def build_template(spec: dict, token: str, parent_page_id: str) -> dict:
         ds_id = data_source_ids[db["name"]]
         db_id = database_ids[db["name"]]
         
-        # Retrieve data source to map names to property IDs
+        # Retrieve data source to map names to property IDs and types
         try:
-            ds_res = _notion_request_with_retry(client.request, path=f"v1/data_sources/{ds_id}", method="GET")
+            ds_res = _notion_request_with_retry(client.data_sources.retrieve, data_source_id=ds_id)
             ds_props = ds_res.get("properties", {})
-            name_to_id = {val["name"]: key for key, val in ds_props.items()}
+            # Map property name to its actual ID (stored in val['id']) and type
+            name_to_info = {
+                val["name"]: {"id": val.get("id", key), "type": val.get("type", "select")}
+                for key, val in ds_props.items()
+            }
         except Exception as e:
             skipped.append(f"Failed to fetch data source properties for {db['name']}: {str(e)}")
-            name_to_id = {}
+            name_to_info = {}
 
         for view in db.get("views", []):
             vtype = view.get("type")
             vname = view.get("name")
             
-            body = {
+            kwargs = {
                 "database_id": db_id,
                 "data_source_id": ds_id,
                 "name": vname,
                 "type": vtype
             }
             
-            # Additional configuration for board/calendar
+            # Additional configuration verified against live 2026-03-11 Notion API
             if vtype == "board":
                 gb = view.get("group_by_property")
-                prop_id = name_to_id.get(gb)
-                if not prop_id:
-                    skipped.append(f"Skipping view '{vname}' because group_by_property '{gb}' ID not found.")
+                prop_info = name_to_info.get(gb)
+                if not prop_info:
+                    skipped.append(f"Skipping view '{vname}' because group_by_property '{gb}' not found.")
                     continue
-                body["configuration"] = {"group_by": {"property_id": prop_id}}
+                kwargs["configuration"] = {
+                    "type": "board",
+                    "group_by": {
+                        "type": prop_info["type"],
+                        "property_id": prop_info["id"],
+                        "sort": {"type": "manual"}
+                    }
+                }
             elif vtype == "calendar":
                 dp = view.get("date_property")
-                prop_id = name_to_id.get(dp)
-                if not prop_id:
-                    skipped.append(f"Skipping view '{vname}' because date_property '{dp}' ID not found.")
+                prop_info = name_to_info.get(dp)
+                if not prop_info:
+                    skipped.append(f"Skipping view '{vname}' because date_property '{dp}' not found.")
                     continue
-                body["configuration"] = {"date_property_id": prop_id}
+                kwargs["configuration"] = {
+                    "type": "calendar",
+                    "date_property_id": prop_info["id"]
+                }
 
             try:
                 view_res = _notion_request_with_retry(
-                    client.request,
-                    path="v1/views",
-                    method="POST",
-                    body=body
+                    client.views.create,
+                    **kwargs
                 )
                 view_ids.append(view_res["id"])
             except Exception as e:
                 skipped.append(f"Failed to create view '{vname}' in {db['name']}: {str(e)}")
 
     # 5. Sample Rows & Sub-pages
+    # Track page IDs for relation resolution: {db_name: {row_title: page_id}}
+    created_page_ids = {}
+
     for db in spec.get("databases", []):
-        ds_id = data_source_ids[db["name"]]
+        db_name = db["name"]
+        ds_id = data_source_ids[db_name]
+        prop_type_map = {p["name"]: p["type"] for p in db.get("properties", [])}
+        created_page_ids[db_name] = {}
+
         for row in db.get("sample_rows", []):
             row_props = {}
+            row_title = ""
             for k, v in row.items():
-                # We do simple property types mapping here for demonstration.
-                # A robust implementation would look at property types from the spec.
-                # In dry-run we just bypass, so this is minimal best-effort mapping for texts.
-                row_props[k] = {"title": [{"text": {"content": str(v)}}]} if k.lower() == "name" or k.lower() == "title" else {"rich_text": [{"text": {"content": str(v)}}]}
+                ptype = prop_type_map.get(k)
+                if ptype == "title" or (not ptype and k.lower() in ("name", "title")):
+                    row_props[k] = {"title": [{"text": {"content": str(v)}}]}
+                    row_title = str(v)
+                elif ptype == "rich_text":
+                    row_props[k] = {"rich_text": [{"text": {"content": str(v)}}]}
+                elif ptype == "select":
+                    row_props[k] = {"select": {"name": str(v)}}
+                elif ptype == "multi_select":
+                    vals = v if isinstance(v, list) else [v]
+                    row_props[k] = {"multi_select": [{"name": str(x)} for x in vals]}
+                elif ptype == "number":
+                    num_val = float(v) if "." in str(v) else int(v)
+                    row_props[k] = {"number": num_val}
+                elif ptype == "checkbox":
+                    row_props[k] = {"checkbox": bool(v)}
+                elif ptype == "date":
+                    row_props[k] = {"date": {"start": str(v)}}
+                elif ptype == "email":
+                    row_props[k] = {"email": str(v)}
+                elif ptype == "url":
+                    row_props[k] = {"url": str(v)}
+                elif ptype == "phone_number":
+                    row_props[k] = {"phone_number": str(v)}
+                elif ptype == "relation":
+                    # Attempt to resolve relation from previously created pages in other databases
+                    matched_id = None
+                    for tdb, pages in created_page_ids.items():
+                        if str(v) in pages:
+                            matched_id = pages[str(v)]
+                            break
+                    if matched_id:
+                        row_props[k] = {"relation": [{"id": matched_id}]}
+                elif ptype in ("formula", "rollup"):
+                    # Formulas and rollups are computed automatically by Notion — do not set directly
+                    continue
+                else:
+                    row_props[k] = {"rich_text": [{"text": {"content": str(v)}}]}
                 
             try:
-                _notion_request_with_retry(
+                page_res = _notion_request_with_retry(
                     client.pages.create,
                     parent={"type": "data_source_id", "data_source_id": ds_id},
                     properties=row_props
                 )
+                if row_title and page_res and "id" in page_res:
+                    created_page_ids[db_name][row_title] = page_res["id"]
             except Exception as e:
-                skipped.append(f"Sample row error in {db['name']}: {str(e)}")
+                skipped.append(f"Sample row error in {db_name}: {str(e)}")
 
     for sp in spec.get("sub_pages", []):
         try:

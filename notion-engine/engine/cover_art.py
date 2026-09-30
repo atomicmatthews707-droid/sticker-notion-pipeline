@@ -7,7 +7,7 @@ def generate_cover_prompts(spec: dict, dry_run: bool = False) -> str:
         return f"Cover Prompt 1: Minimalist aesthetic for {spec.get('template_name', 'Template')}."
 
     client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-    model = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20240620")
+    model = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
     
     response = client.messages.create(
         model=model,
@@ -17,4 +17,5 @@ def generate_cover_prompts(spec: dict, dry_run: bool = False) -> str:
             {"role": "user", "content": f"Generate cover art prompts for this template: {spec.get('template_name')}"}
         ]
     )
-    return response.content[0].text
+    parts = [block.text for block in response.content if getattr(block, "type", None) == "text" or hasattr(block, "text")]
+    return "".join(parts)

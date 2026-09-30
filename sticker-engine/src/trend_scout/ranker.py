@@ -147,7 +147,7 @@ def rank(
     for name, combined_score in filtered[:top_n]:
         base = niche_meta[name]
         results.append(NicheSignal(
-            name=name,
+            name=base.name,
             source=base.source,
             score=combined_score,
             metadata=base.metadata,
