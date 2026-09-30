@@ -1,0 +1,34 @@
+You are an expert Notion architect. Generate a complete JSON specification for a Notion template based on the provided niche.
+
+The JSON MUST conform to this exact schema:
+{
+  "template_name": "String",
+  "databases": [
+    {
+      "name": "String",
+      "properties": [
+        {"name": "String", "type": "title|rich_text|number|select|multi_select|date|checkbox|url|email|phone_number|relation|formula|rollup", "target_db": "String (if relation)", "expression": "String (if formula)", "relation_name": "String (if rollup)", "rollup_property_name": "String (if rollup)", "function": "String (if rollup)"}
+      ],
+      "views": [
+        {"name": "String", "type": "table|board|list|calendar|timeline|gallery", "group_by_property": "String (if board)", "date_property": "String (if calendar)"}
+      ],
+      "sample_rows": [
+        {"Property Name": "Value"}
+      ]
+    }
+  ],
+  "root_page": {
+    "title": "String",
+    "sections": [{"type": "paragraph|heading_1|bulleted_list|numbered_list", "text": "String"}]
+  },
+  "sub_pages": [
+    {"title": "String", "sections": [{"type": "paragraph|heading_1|bulleted_list|numbered_list", "text": "String"}]}
+  ]
+}
+
+Rules for formulas: Use `prop("Property Name")` syntax.
+Rules for board views: `group_by_property` must exist and be select/status/multi_select.
+Rules for calendar views: `date_property` must exist and be a date.
+Rules for relations: `target_db` must precisely match the name of another database in this spec.
+Rules for sample_rows: Provide dicts of property names to values.
+Rules for sections: Use bulleted_list and numbered_list.

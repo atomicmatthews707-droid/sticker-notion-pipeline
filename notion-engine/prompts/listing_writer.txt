@@ -1,0 +1,1 @@
+Write a highly converting Gumroad/Etsy sales listing for the provided Notion template spec.
