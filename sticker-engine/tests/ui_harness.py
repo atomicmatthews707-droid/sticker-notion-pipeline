@@ -35,6 +35,21 @@ def fake_vision(self, prompt, image_bytes, mime_type="image/png", system=None, m
     return {"score": score, "reason": {9: "Polished and appealing.", 8: "Clean cutout, good outline.", 7: "Good, minor flaws.", 5: "Weak composition.", 3: "Cutout looks damaged."}[score]}
 
 
+JOKES = ["skeleton waiting for a date that never came", "ghost who is tired of the sheet cliche", "witch parking permit expired",
+         "vampire reading the terms of service", "zombie on his fourth coffee", "pumpkin spice and everything nice and nothing",
+         "werewolf apologising for the howling", "black cat judging your life choices", "mummy unwrapping a tax return",
+         "bat with a noise complaint", "cauldron of questionable soup", "haunted house with bad wifi"]
+
+
+def fake_json(self, prompt, system=None, max_attempts=2):
+    import re
+    n = int(re.search(r"Write (\d+) candidate", prompt).group(1))
+    offset = 0 if "pack 2 of" not in prompt else 6
+    return {"ideas": [{"text": f'"{JOKES[(offset + i) % len(JOKES)].upper()}" with a bold graphic', "weakness": "a bit obvious",
+                       "scores": {"funny": 4 + i % 5, "original": 5, "readable": 6, "on_brief": 7}} for i in range(min(n, 6))]}
+
+
+GeminiClient.generate_json = fake_json
 GeminiClient.generate_image = fake_generate_image
 GeminiClient.generate_vision_json = fake_vision
 studio.PORT = int(os.getenv("PORT", "8099"))

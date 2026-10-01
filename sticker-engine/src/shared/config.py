@@ -33,6 +33,12 @@ def get(path: str, default: Any = None) -> Any:
     return node
 
 
+def image_quality_phrase() -> str:
+    """Words added to every image prompt for sharpness. Env IMAGE_QUALITY_PHRASE overrides config (empty turns it off)."""
+    env = os.getenv("IMAGE_QUALITY_PHRASE")
+    return (env if env is not None else (get("image.quality_phrase", "") or "")).strip()
+
+
 def output_dir() -> Path:
     """Where generated images and packs go. Gitignored; set OUTPUT_DIR for a mounted volume."""
     return Path(os.getenv("OUTPUT_DIR", ROOT / "output"))

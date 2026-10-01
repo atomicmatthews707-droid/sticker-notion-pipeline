@@ -14,11 +14,13 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from nicegui import app, events, ui
+from nicegui import app, events, run, ui
 from PIL import Image
 
 from src.cli import estimate_usd
+from src.generator import ideas as idea_writer
 from src.generator.prompt_builder import compose_prompt
+from src.packaging import export
 from src.shared import config, design
 from src.storage import db
 from src.ui import gallery, jobs, opener, settings
@@ -70,6 +72,25 @@ def file_url(path: str) -> str:
     return f"/files/{rel.as_posix()}?v={int(Path(path).stat().st_mtime)}"
 
 
+def preview_url(path: str, px: int = 720) -> str:
+    """A small copy of a picture for the grid. 4K originals stay untouched on disk and open in full from the menu."""
+    src = Path(path)
+    thumb = src.parent / ".thumbs" / f"{src.stem}.png"
+    try:
+        if not thumb.exists() or thumb.stat().st_mtime < src.stat().st_mtime:
+            thumb.parent.mkdir(exist_ok=True)
+            with Image.open(src) as im:
+                im = im.convert("RGBA")
+                im.thumbnail((px, px), Image.LANCZOS)
+                im.save(thumb, "PNG")
+        return file_url(str(thumb))
+    except Exception:
+        return file_url(path)
+
+
+IMAGE_SIZES = {"4K": "4K ultra-high-definition (default, costs the most)", "2K": "2K high definition", "1K": "1K draft (cheapest, for testing)"}
+
+
 def save_env_key(key: str, env_path: Path | None = None) -> None:
     """Write GEMINI_API_KEY into .env, replacing an existing line."""
     env_path = env_path or (config.ROOT / ".env")
@@ -96,7 +117,7 @@ def menu_actions(prefs: dict) -> list[dict]:
 def index():
     prefs = settings.load()
     upload_dir = config.output_dir() / "uploads" / uuid.uuid4().hex[:8]
-    st = {"refs": [], "niche_id": RUNNER.niche_id, "was_running": False, "signature": None}
+    st = {"refs": [], "niche_id": RUNNER.niche_id, "was_running": False, "signature": None, "ideas": None, "inputs": []}
     ui.dark_mode()
     ui.add_head_html(PASTE_JS)
     ui.add_css(".q-uploader__list { display: none; } .q-uploader { max-height: 64px; }")
@@ -126,20 +147,25 @@ def index():
                     ui.button("Reset", icon="undo", on_click=lambda: load_style(preset_pick.value)).props("flat dense")
 
             with ui.card().classes("w-full"):
-                ui.label("2. Subjects").classes("text-lg font-bold")
-                ui.label("What to make, e.g. “autumn cozy vibes”, “vintage garage tools”, “office humor phrases”. Paste "
-                         "prompts or a Markdown file; your words are kept as written. Style comes from the card above."
+                ui.label("2. Brief").classes("text-lg font-bold")
+                ui.label("Describe the pack in a sentence or two, e.g. “autumn cozy vibes”, “vintage garage tools”, “office humor "
+                         "phrases”. The look comes from the style card above."
                          ).classes("text-sm text-grey-7")
-                text = ui.textarea(placeholder="One subject, a list (- or 1.), paragraphs, or a whole .md file").props(
-                    'outlined autogrow input-style="min-height:200px"').classes("w-full")
+                text = ui.textarea(placeholder="e.g. halloween related, funny sarcastic, adult racy iconic spoof").props(
+                    'outlined autogrow input-style="min-height:120px"').classes("w-full")
                 text.value = ""
                 ui.upload(label="Or load a .md / .txt file", auto_upload=True, max_files=1,
                           on_upload=lambda e: load_text_file(e)).props('accept=".md,.markdown,.txt" flat bordered hide-upload-btn').classes("w-full")
-                mode = ui.toggle({"smart": "Smart", "single": "One prompt", "lines": "One per line"}, value=prefs["mode"])
-                detected = ui.label("").classes("text-sm font-medium")
-                with ui.expansion("Show the prompts it found").classes("w-full text-sm"):
-                    found_box = ui.column().classes("gap-1")
-                apply_style = ui.switch("Apply the global style to each subject", value=prefs["apply_style"])
+                write_ideas_sw = ui.switch("Write the sticker ideas for me (text AI, about $0.02 per pack)", value=prefs["write_ideas"])
+                ui.label("On: the AI turns your brief into finished sticker ideas, ranks them, and you edit the list before any "
+                         "image is paid for. Off: each line you write below is used as a finished sticker.").classes("text-xs text-grey-7")
+                paste_box = ui.column().classes("w-full gap-1")
+                with paste_box:
+                    mode = ui.toggle({"smart": "Smart", "single": "One prompt", "lines": "One per line"}, value=prefs["mode"])
+                    detected = ui.label("").classes("text-sm font-medium")
+                    with ui.expansion("Show the prompts it found").classes("w-full text-sm"):
+                        found_box = ui.column().classes("gap-1")
+                apply_style = ui.switch("Apply the global style to each sticker", value=prefs["apply_style"])
                 ui.label("White background and cutout are added only when the style asks for them (its “background” and “cutout” lines).").classes("text-xs text-grey-7")
 
             with ui.card().classes("w-full"):
@@ -151,15 +177,29 @@ def index():
                 ref_mode = ui.select(REFERENCE_CHOICES, value=prefs["reference_mode"], label="How should they be used?").classes("w-full")
 
             with ui.card().classes("w-full"):
-                ui.label("How many").classes("text-lg font-bold")
+                ui.label("3. How many").classes("text-lg font-bold")
                 with ui.row().classes("w-full no-wrap gap-3"):
-                    count = ui.number("Pack count", value=prefs["count"], min=1, max=jobs.MAX_PROMPTS, step=1, precision=0).classes("grow")
-                    variants = ui.number("Variations per subject", value=prefs["variants"], min=1, max=8, step=1, precision=0).classes("grow")
+                    count = ui.number("Stickers in each pack", value=prefs["count"], min=1, max=jobs.MAX_PROMPTS, step=1, precision=0).classes("grow")
+                    variants = ui.number("Versions of each sticker", value=prefs["variants"], min=1, max=8, step=1, precision=0).classes("grow")
+                    batches = ui.number("Number of packs", value=prefs["batches"], min=1, max=10, step=1, precision=0).classes("grow")
+                ui.label("Example: 10 stickers, 3 versions, 3 packs = three different packs of 10, each sticker drawn 3 ways: 90 images. "
+                         "Every image made is shown to you; nothing is hidden.").classes("text-xs text-grey-7")
                 total_label = ui.label("").classes("font-bold")
                 cost_label = ui.label("").classes("text-sm")
-                ui.label("Every image made is shown to you. Variations are extra tries of the same prompt with different seeds, "
-                         "so you pick; nothing is hidden or thrown away.").classes("text-xs text-grey-7")
-                qa = ui.switch("AI quality check (adds a score to each image, about $0.016 each)", value=prefs["qa"])
+                size_pick = ui.select(IMAGE_SIZES, value=prefs["image_size"], label="Picture size").classes("w-full")
+                write_btn = ui.button("Write the ideas", icon="lightbulb", on_click=lambda: write_ideas_click()).props("color=primary outline")
+
+            ideas_card = ui.card().classes("w-full")
+            with ideas_card:
+                ui.label("4. Ideas").classes("text-lg font-bold")
+                ui.label("Ranked by the AI's own critique (its opinion, not proof). Edit any line, or clear it to drop it. "
+                         "Only these are drawn.").classes("text-sm text-grey-7")
+                ideas_box = ui.column().classes("w-full gap-1")
+            ideas_card.set_visibility(False)
+
+            with ui.card().classes("w-full"):
+                ui.label("5. Create").classes("text-lg font-bold")
+                qa = ui.switch("AI quality check on the finished pictures (about $0.016 each)", value=prefs["qa"])
                 build_pack = ui.switch("Also build the Etsy/Gumroad pack and listing text (uses a little text AI)", value=prefs["build_pack"])
                 with ui.row().classes("gap-2"):
                     create_btn = ui.button("Create stickers", icon="auto_awesome", on_click=lambda: create()).props("color=primary")
@@ -168,7 +208,7 @@ def index():
         # ── right: progress and review ────────────────────────────────────────────
         with ui.column().classes("gap-3 grow").style("min-width:0"):
             with ui.card().classes("w-full"):
-                ui.label("3. Progress").classes("text-lg font-bold")
+                ui.label("Progress").classes("text-lg font-bold")
                 status = ui.label("Ready.").classes("font-medium")
                 made_bar = ui.linear_progress(value=0, show_value=False).classes("w-full")
                 made_text = ui.label("").classes("text-xs text-grey-7")
@@ -177,7 +217,7 @@ def index():
                 log = ui.log(max_lines=500).classes("w-full").style("height:240px")
 
             with ui.card().classes("w-full"):
-                ui.label("4. Review").classes("text-lg font-bold")
+                ui.label("Review").classes("text-lg font-bold")
                 ui.label("Right-click any sticker to open it in another program on this computer.").classes("text-sm text-grey-7")
                 with ui.row().classes("items-center gap-3"):
                     show = ui.toggle({"all": "All", "passed": "Passed", "low": "Low score", "duplicate": "Duplicates", "unchecked": "Not checked"}, value="all")
@@ -187,6 +227,11 @@ def index():
                     history = ui.select({}, label="Earlier runs", on_change=lambda e: pick_history(e.value)).classes("w-72")
                     ui.button("Open this run's folder", icon="folder_open", on_click=lambda: open_folder()).props("flat")
                     pack_btn = ui.button("Build the pack from these", icon="inventory_2", on_click=lambda: build_pack_click()).props("flat")
+                with ui.row().classes("items-center gap-3"):
+                    export_fmt = ui.select(export.FORMATS, value=prefs["export_format"], label="Export as").classes("w-72")
+                    ui.button("Export this run", icon="download", on_click=lambda: export_click()).props("color=primary")
+                ui.label("Exports the stickers that passed (or were not checked). Goodnotes: PDF pages you import into Goodnotes "
+                         "(its own .goodnotes file type is private, so a PDF is used).").classes("text-xs text-grey-7")
                 grid = ui.element("div").classes("w-full").style(
                     "display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:12px")
 
@@ -239,12 +284,18 @@ def index():
         return parse_prompts(text.value or "", mode.value)
 
     def numbers() -> tuple[int, int, int]:
-        n_prompts = len(parsed().prompts)
-        c = int(count.value or 1)
+        """(stickers in each pack, versions of each, number of packs)"""
         v = int(variants.value or 1)
-        return n_prompts, c, v
+        if write_ideas_sw.value:
+            return int(count.value or 1), v, int(batches.value or 1)
+        return min(len(parsed().prompts), int(count.value or 1)), v, 1
 
     def refresh_summary(*_):
+        os.environ["GEMINI_IMAGE_SIZE"] = size_pick.value or "4K"
+        writer = bool(write_ideas_sw.value)
+        paste_box.set_visibility(not writer)
+        write_btn.set_visibility(writer)
+        batches.set_enabled(writer)
         p = parsed()
         detected.set_text(p.how)
         style_md = style_text.value or ""
@@ -258,18 +309,18 @@ def index():
             for i, pr in enumerate(p.prompts[:60], 1):
                 final = compose_prompt(pr, direction, apply_style=bool(apply_style.value), rules=rules)
                 ui.label(f"{i}. {final[:400]}{'…' if len(final) > 400 else ''}").classes("text-xs")
-        n_prompts, c, v = numbers()
-        used = min(n_prompts, c)
-        total = jobs.image_total(n_prompts, c, v)
-        if n_prompts == 0:
+        per_pack, v, packs = numbers()
+        total = jobs.image_total(per_pack, v, packs)
+        if total == 0:
             total_label.set_text("Nothing to make yet.")
             cost_label.set_text("")
         else:
-            note = f" (you asked for {c} but gave {n_prompts} prompt{'s' if n_prompts != 1 else ''}; raise Variations to make more of the same prompt)" if c > n_prompts else ""
-            total_label.set_text(f"This will create exactly {total} image{'s' if total != 1 else ''}: {used} prompt{'s' if used != 1 else ''} × {v} variation{'s' if v != 1 else ''}.{note}")
-            est = estimate_usd(used, v, qa.value, build_pack.value)
-            cost_label.set_text(f"Estimated cost: up to ${est:.2f} of your Gemini credit. {spend_text()}")
-        create_btn.set_enabled(n_prompts > 0 and not RUNNER.running)
+            total_label.set_text(f"{per_pack} sticker{'s' if per_pack != 1 else ''} × {v} version{'s' if v != 1 else ''} × "
+                                 f"{packs} pack{'s' if packs != 1 else ''} = {total} image{'s' if total != 1 else ''}")
+            est = estimate_usd(per_pack * packs, v, qa.value, build_pack.value)
+            note = f" Writing the ideas first costs about ${0.02 * packs:.2f} more." if writer and not st["ideas"] else ""
+            cost_label.set_text(f"Estimated image cost: up to ${est:.2f} at {size_pick.value}.{note} {spend_text()}")
+        create_btn.set_enabled(total > 0 and not RUNNER.running and (not writer or bool(st["ideas"])))
 
     def spend_text() -> str:
         return jobs.spend_line()
@@ -329,32 +380,92 @@ def index():
         st["refs"] = [p for p in st["refs"] if p != path]
         refresh_refs()
 
-    async def create():
-        p = parsed()
-        n_prompts, c, v = numbers()
-        if not p.prompts:
-            ui.notify("Paste at least one prompt first.", type="warning")
+    def render_ideas():
+        ideas_box.clear()
+        st["inputs"] = []
+        data = st["ideas"]
+        ideas_card.set_visibility(bool(data))
+        if not data:
             return
-        used = min(n_prompts, c)
-        total = jobs.image_total(n_prompts, c, v)
-        est = estimate_usd(used, v, qa.value, build_pack.value)
+        with ideas_box:
+            for w in data.warnings:
+                ui.label("⚠ " + w).classes("text-xs text-negative")
+            for pi, cands in enumerate(data.packs):
+                row_inputs = []
+                if len(data.packs) > 1:
+                    ui.label(f"Pack {pi + 1}").classes("font-bold mt-2")
+                for idea in (c for c in cands if c.chosen):
+                    inp = ui.input(value=idea.text).props("outlined dense").classes("w-full")
+                    row_inputs.append(inp)
+                    parts = ", ".join(f"{k.replace('_', ' ')} {v:.0f}" for k, v in idea.scores.items())
+                    ui.label(f"AI score {idea.score:.1f} ({parts}). Weakness: {idea.weakness or 'none given'}").classes("text-xs text-grey-7")
+                st["inputs"].append(row_inputs)
+                rest = [c for c in cands if not c.chosen]
+                if rest:
+                    with ui.expansion(f"{len(rest)} ideas that did not make the cut").classes("w-full text-sm"):
+                        for c in rest:
+                            ui.label(f"{c.score:.1f}  {c.text}").classes("text-xs")
+
+    async def write_ideas_click():
+        brief = (text.value or "").strip()
+        if not brief:
+            ui.notify("Write a brief first.", type="warning")
+            return
+        if not os.getenv("GEMINI_API_KEY"):
+            ui.notify("No Gemini API key found. Open Settings and paste it.", type="negative")
+            return
+        db.init_db_sync()
+        write_btn.disable()
+        status.set_text("Writing and ranking ideas…")
+        try:
+            result = await run.io_bound(idea_writer.write_ideas, brief, int(count.value or 1), int(batches.value or 1),
+                                        style_text.value or None)
+        except Exception as e:
+            ui.notify(f"Could not write ideas: {e}", type="negative", multi_line=True, timeout=10000)
+            return
+        finally:
+            write_btn.enable()
+            status.set_text("Ready.")
+        st["ideas"] = result
+        render_ideas()
+        refresh_header()
+        refresh_summary()
+
+    def collect_packs() -> list[list[str]]:
+        if write_ideas_sw.value:
+            return [[i.value.strip() for i in row if (i.value or "").strip()] for row in st["inputs"]]
+        return [parsed().prompts[:max(1, int(count.value or 1))]]
+
+    async def create():
+        packs = [pk for pk in collect_packs() if pk]
+        if not packs:
+            ui.notify("Write the ideas first, or paste at least one finished sticker.", type="warning")
+            return
+        v = int(variants.value or 1)
+        total = jobs.image_total(sum(len(pk) for pk in packs), v)
+        est = estimate_usd(sum(len(pk) for pk in packs), v, qa.value, build_pack.value)
+        sizes = ", ".join(str(len(pk)) for pk in packs)
         with ui.dialog() as dlg, ui.card():
             ui.label(f"Create exactly {total} image{'s' if total != 1 else ''}?").classes("text-lg font-bold")
-            ui.label(f"{used} prompt{'s' if used != 1 else ''} × {v} variation{'s' if v != 1 else ''}. "
-                     f"Estimated cost: up to ${est:.2f}. This uses your Gemini credit.")
-            ui.label("You will see every image that is made. You can press Stop at any time; images already made are kept.").classes("text-sm text-grey-7")
+            ui.label(f"{len(packs)} pack{'s' if len(packs) != 1 else ''} ({sizes} stickers) × {v} version{'s' if v != 1 else ''} "
+                     f"of each sticker, at {size_pick.value}.")
+            ui.label(f"Estimated cost: up to ${est:.2f}. This uses your Gemini credit.").classes("font-medium")
+            ui.label("You will see every image that is made. Packs run one after another. You can press Stop at any time; "
+                     "images already made are kept.").classes("text-sm text-grey-7")
             with ui.row().classes("justify-end w-full"):
                 ui.button("Cancel", on_click=lambda: dlg.submit(False)).props("flat")
                 ui.button("Create", on_click=lambda: dlg.submit(True)).props("color=primary")
         if not await dlg:
             return
         settings.save({**prefs, "mode": mode.value, "apply_style": apply_style.value, "qa": qa.value, "build_pack": build_pack.value,
-                       "count": c, "variants": v, "background": bg.value, "reference_mode": ref_mode.value,
-                       "style_preset": preset_pick.value})
+                       "count": int(count.value or 1), "variants": v, "batches": int(batches.value or 1),
+                       "write_ideas": bool(write_ideas_sw.value), "image_size": size_pick.value, "export_format": export_fmt.value,
+                       "background": bg.value, "reference_mode": ref_mode.value, "style_preset": preset_pick.value})
+        name = " ".join((text.value or "stickers").split())[:40] or "stickers"
         try:
-            nid = RUNNER.start(name=p.name, prompts=p.prompts, count=c, variants=v, references=list(st["refs"]),
-                               reference_mode=ref_mode.value, apply_style=bool(apply_style.value), qa=bool(qa.value),
-                               build_pack=bool(build_pack.value), style_md=style_text.value or None)
+            nid = RUNNER.start_packs(name=name, packs=packs, variants=v, references=list(st["refs"]),
+                                     reference_mode=ref_mode.value, apply_style=bool(apply_style.value), qa=bool(qa.value),
+                                     build_pack=bool(build_pack.value), style_md=style_text.value or None)
         except jobs.CannotStart as e:
             ui.notify(str(e), type="negative", multi_line=True, timeout=8000)
             return
@@ -362,6 +473,24 @@ def index():
         st["signature"] = None
         log.clear()
         refresh_history(select=nid)
+
+    async def export_click():
+        nid = st["niche_id"]
+        if not nid:
+            ui.notify("No run selected yet.", type="warning")
+            return
+        name = (db.get_niche(nid) or {}).get("name", "stickers")
+        try:
+            path = await run.io_bound(export.export_run, nid, export_fmt.value, name)
+        except export.NothingToExport as e:
+            ui.notify(str(e), type="warning")
+            return
+        except Exception as e:
+            ui.notify(f"Export failed: {e}", type="negative", multi_line=True)
+            return
+        settings.save({**settings.load(), "export_format": export_fmt.value})
+        ui.notify(f"Saved {path.name}", type="positive")
+        do_action({"name": "Show in folder", "kind": "reveal"}, str(path))
 
     def refresh_history(select=None):
         rows = [n for n in db.list_niches(30) if n["source"] == "request"]
@@ -421,7 +550,7 @@ def index():
                 with ui.card().tight().classes("w-full"):
                     with ui.element("div").style(f"{BG_STYLE[bg.value]};width:100%;aspect-ratio:1;display:grid;place-items:center"):
                         if path:
-                            ui.image(file_url(path)).props("fit=contain ratio=1").style("width:100%")
+                            ui.image(preview_url(path)).props("fit=contain ratio=1").style("width:100%")
                         else:
                             ui.label(label).classes("text-sm text-grey-7 p-3 text-center")
                     with ui.column().classes("gap-1 p-2"):
@@ -472,6 +601,9 @@ def index():
         for line in RUNNER.new_log_lines():
             log.push(line)
         running = RUNNER.running
+        if running and RUNNER.niche_id and RUNNER.niche_id != st["niche_id"]:
+            st["niche_id"], st["signature"] = RUNNER.niche_id, None      # a queue moved on to its next pack: follow it
+            refresh_history(select=RUNNER.niche_id)
         nid = st["niche_id"]
         if nid:
             exp = gallery.expected_images(nid)
@@ -487,7 +619,7 @@ def index():
                          "cancelled": "Stopped. Everything made so far is kept below.", "paused": "Paused at today's spending cap.",
                          "failed": "Stopped because of an error (see the log)."}
         status.set_text("Working… you can press Stop at any time." if running else outcome_words.get(RUNNER.outcome, "Ready."))
-        create_btn.set_enabled(bool(parsed().prompts) and not running)
+        create_btn.set_enabled(not running and (jobs.image_total(*numbers()) > 0) and (not write_ideas_sw.value or bool(st["ideas"])))
         stop_btn.set_enabled(running)
         pack_btn.set_visibility(bool(nid) and not running and (db.get_niche(nid) or {}).get("status") == "REVIEW")
         if st["was_running"] and not running:
@@ -495,7 +627,7 @@ def index():
             refresh_history(select=nid)
         st["was_running"] = running
 
-    for control in (text, mode, count, variants, qa, build_pack, style_text, apply_style):
+    for control in (text, mode, count, variants, batches, qa, build_pack, style_text, apply_style, write_ideas_sw, size_pick):
         control.on_value_change(refresh_summary)
     for control in (show, view, bg):
         control.on_value_change(lambda _e: (st.update(signature=None), render_gallery()))

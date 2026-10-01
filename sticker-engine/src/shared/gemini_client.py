@@ -28,8 +28,25 @@ TEXT_PRICING = {
 }
 DEFAULT_TEXT_RATES = {"in": 2.00, "out": 12.00}  # conservative: unknown models are billed like the pro tier
 # USD per generated image (~1K resolution). The Batch API is about half price.
-IMAGE_PRICING = {"gemini-3.1-flash-image": 0.067}
+IMAGE_PRICING = {"gemini-3.1-flash-image": 0.067}   # 1K price; larger sizes come from config image.price_usd
 DEFAULT_IMAGE_COST = 0.10
+IMAGE_SIZES = ("1K", "2K", "4K")
+
+
+def image_size() -> str:
+    """Output size for every image: env GEMINI_IMAGE_SIZE, else config image.size (default 4K)."""
+    size = str(os.getenv("GEMINI_IMAGE_SIZE") or config.get("image.size", "4K")).upper()
+    return size if size in IMAGE_SIZES else "4K"
+
+
+def image_price(model: str, size: Optional[str] = None) -> float:
+    """USD for one image. The model's 1K price, scaled by the config's size ratios (assumed, editable) above 1K."""
+    size = size or image_size()
+    base = IMAGE_PRICING.get(model, DEFAULT_IMAGE_COST)
+    table = config.get("image.price_usd", {}) or {}
+    if size == "1K" or size not in table or not table.get("1K"):
+        return base
+    return round(base * float(table[size]) / float(table["1K"]), 4)
 
 
 class BudgetExceeded(Exception):
@@ -139,7 +156,7 @@ class GeminiClient:
         self._check_budget()
         config_ = types.GenerateContentConfig(
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+            image_config=types.ImageConfig(aspect_ratio=aspect_ratio, image_size=image_size()),
             seed=seed,
         )
         contents = [types.Part.from_bytes(data=data, mime_type=mime) for data, mime in (references or [])] + [prompt]
@@ -149,10 +166,7 @@ class GeminiClient:
         parts = (response.candidates[0].content.parts or []) if response.candidates and response.candidates[0].content else []
         for part in parts:
             if part.inline_data and part.inline_data.data:
-                price = IMAGE_PRICING.get(self.image_model)
-                if price is None:
-                    logger.warning("No price listed for image model %r; assuming $%.2f.", self.image_model, DEFAULT_IMAGE_COST)
-                    price = DEFAULT_IMAGE_COST
+                price = image_price(self.image_model)
                 self._record(self.image_model, price, images=1)
                 return ImageResult(part.inline_data.data, part.inline_data.mime_type or "image/png")
         reason = response.candidates[0].finish_reason if response.candidates else getattr(response.prompt_feedback, "block_reason", None)

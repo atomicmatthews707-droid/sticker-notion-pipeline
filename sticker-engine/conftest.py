@@ -11,6 +11,9 @@ def isolated_env(tmp_path, monkeypatch):
     """Every test gets its own database and output folder, and a clean environment."""
     monkeypatch.setenv("DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'test.db'}")
     monkeypatch.setenv("OUTPUT_DIR", str(tmp_path / "out"))
+    # The long-standing tests pin the original 1K price and prompt wording; the 4K defaults have their own tests.
+    monkeypatch.setenv("GEMINI_IMAGE_SIZE", "1K")
+    monkeypatch.setenv("IMAGE_QUALITY_PHRASE", "")
     for var in ("BUDGET_DAILY_LIMIT_USD", "ENGINE_API_TOKEN", "ALLOW_UNAUTHENTICATED", "CONFIG_PATH", "GEMINI_API_KEY"):
         monkeypatch.delenv(var, raising=False)
     from src.shared import config

@@ -63,7 +63,18 @@ the pipeline per style: `cutout: floodfill|rembg|none`, `background: white|none`
 `guard: strict|basic`, `aspect: 1:1|3:4|4:3|9:16|16:9`. Die-cut sticker styles use white background plus cutout;
 full-frame styles (photos, signs) set them to `none`.
 
-Every image you ask for (subjects x variations) is made and shown; nothing is hidden. Right-click any picture to open it
+**How a run works.** Write a brief, set three numbers (stickers in each pack, versions of each sticker, number of packs),
+press "Write the ideas": the text AI writes more ideas than needed, critiques them, and the best are kept, ranked, and
+shown for you to edit before any image is paid for. Then "Create stickers" draws them, one pack at a time.
+10 stickers x 3 versions x 3 packs = 90 images. The scores are the AI's opinion of its own ideas, not proof.
+
+**Picture size.** Every image is 4K by default with "ultra-high-definition, razor-sharp edges, super clean lines" added
+(`image:` in `config/config.yaml`). The size costs more per image: the prices there are assumptions, so check Google's
+billing page after a run and edit them. Pick 1K in the app for cheap test runs.
+
+**Export.** Goodnotes (PDF sticker pages, the default), PNG zip, or JPEG zip, from the Review card.
+
+Every image you ask for is made and shown; nothing is hidden. Right-click any picture to open it
 in another program (add your own in Settings).
 
 ## Ask for a pack (and change how it looks)

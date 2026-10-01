@@ -19,9 +19,14 @@ _RUBRIC_IMAGE = config.ROOT / "config" / "prompts" / "qa_rubric_image.md"
 VIEW_GREY = (118, 124, 136)  # neutral backdrop: exposes haze, fringes and see-through areas that white hides
 
 
+REVIEW_MAX_PX = 1280
+
+
 def render_for_review(path: str, sticker: bool = True) -> bytes:
     """The picture as the reviewer sees it. Stickers sit on grey so cutout damage is visible; full-frame images on white."""
     img = Image.open(path).convert("RGBA")
+    if max(img.size) > REVIEW_MAX_PX:   # judging does not need 4K, and every extra pixel is billed as tokens
+        img.thumbnail((REVIEW_MAX_PX, REVIEW_MAX_PX), Image.LANCZOS)
     backdrop = Image.new("RGBA", img.size, (VIEW_GREY if sticker else (255, 255, 255)) + (255,))
     backdrop.alpha_composite(img)
     out = io.BytesIO()

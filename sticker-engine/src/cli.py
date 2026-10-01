@@ -16,15 +16,17 @@ from src.shared import config
 from src.shared.design import request_from_markdown
 from src.storage import db
 
-IMAGE_USD = 0.067     # per generated image (gemini-3.1-flash-image)
 QA_USD = 0.016        # per image judged (measured)
 OVERHEAD_USD = 0.01   # subject brainstorm and listing copy
 
 
 def estimate_usd(count: int, variants: int = 1, qa: bool = True, text_ai: bool = True) -> float:
     """Upper-end estimate: every image generated (count x variations) and, if on, judged once."""
+    from src.shared.gemini_client import image_price
+
     images = count * max(1, variants)
-    return round(images * (IMAGE_USD + (QA_USD if qa else 0)) + (OVERHEAD_USD if text_ai else 0), 2)
+    unit = image_price("gemini-3.1-flash-image") + (QA_USD if qa else 0)
+    return round(images * unit + (OVERHEAD_USD if text_ai else 0), 2)
 
 
 def _request(args) -> dict:

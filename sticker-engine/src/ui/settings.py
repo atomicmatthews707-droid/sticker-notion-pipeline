@@ -14,10 +14,14 @@ DEFAULTS = {
     "apply_style": True,
     "qa": True,
     "build_pack": False,
-    "count": 1,
+    "count": 10,
     "variants": 1,
     "reference_mode": "style",
     "style_preset": "clipart-kawaii",
+    "batches": 1,
+    "write_ideas": True,
+    "image_size": "4K",
+    "export_format": "goodnotes",
 }
 
 

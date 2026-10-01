@@ -218,7 +218,7 @@ def test_settings_round_trip_and_ignore_junk(tmp_path):
     assert settings.load(path)["variants"] == 1
     settings.save({"variants": 4, "background": "dark", "evil": 1}, path)
     loaded = settings.load(path)
-    assert loaded["variants"] == 4 and loaded["background"] == "dark" and "evil" not in loaded and loaded["count"] == 1
+    assert loaded["variants"] == 4 and loaded["background"] == "dark" and "evil" not in loaded and loaded["count"] == 10
 
 
 def test_corrupt_settings_fall_back_to_defaults(tmp_path):
@@ -249,17 +249,17 @@ def wait(runner, seconds=5):
         time.sleep(0.02)
 
 
-def test_image_total_is_exactly_prompts_times_variations():
-    assert jobs.image_total(3, 3, 2) == 6
-    assert jobs.image_total(10, 4, 3) == 12            # count caps the prompts used
-    assert jobs.image_total(2, 10, 5) == 10            # count cannot invent prompts
-    assert jobs.image_total(1, 1, 1) == 1
+def test_image_total_is_stickers_times_versions_times_packs():
+    assert jobs.image_total(10, 3, 3) == 90            # 10 stickers, 3 versions, 3 packs
+    assert jobs.image_total(10, 1) == 10
+    assert jobs.image_total(3, 2) == 6
+    assert jobs.image_total(0, 5, 5) == 0
 
 
 def test_a_run_says_exactly_how_many_images_it_will_make(runner):
     nid = start(runner)
     wait(runner)
-    assert "exactly 6 images (3 prompts x 2 variations)" in runner.log[0]
+    assert "exactly 6 images" in runner.log[0]
     assert runner.outcome == "review" and "Every image is below" in " ".join(runner.log)
     niche = db.get_niche(nid)
     assert niche["subjects"] == ["a", "b", "c"] and niche["options"]["verbatim"] is True and niche["options"]["variants"] == 2
@@ -272,9 +272,8 @@ def test_count_limits_how_many_prompts_are_used(runner):
 
 
 @pytest.mark.parametrize("over,message", [
-    ({"prompts": []}, "at least one prompt"),
-    ({"count": 0}, "at least 1"),
-    ({"prompts": ["x"] * 61, "count": 61}, "limit is 60"),
+    ({"prompts": []}, "nothing to make"),
+    ({"prompts": ["x"] * 61, "count": 61}, "at most 60"),
     ({"prompts": ["x"] * 50, "count": 50, "variants": 3}, "limit is 100"),
 ])
 def test_refusals_happen_before_anything_is_spent(runner, over, message):

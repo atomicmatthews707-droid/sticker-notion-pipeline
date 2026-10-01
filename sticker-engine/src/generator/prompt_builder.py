@@ -25,10 +25,11 @@ def compose_prompt(subject: str, direction: Optional[Direction] = None, style: s
     """
     rules = rules or rules_for()
     background = config.get("sticker_style", {}).get("background", "") if rules.background == "white" else ""
+    quality = config.image_quality_phrase()
     if not apply_style:
-        return ", ".join(p for p in (subject, background) if p)
+        return ", ".join(p for p in (subject, background, quality) if p)
     d = direction or direction_for(style=style)
-    parts = [subject, style.strip() or d.style, d.palette, d.text, background, d.composition]
+    parts = [subject, style.strip() or d.style, d.palette, d.text, background, d.composition, quality]
     prompt = ", ".join(p for p in parts if p)
     return f"{prompt}. Avoid: {d.avoid}" if d.avoid else prompt
 
