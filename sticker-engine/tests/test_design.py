@@ -264,3 +264,11 @@ def test_cost_estimate_is_just_above_what_was_measured():
     measured_5 = 0.417                         # the live 5-sticker run
     assert measured_5 <= cli.estimate_usd(5) <= measured_5 * 1.1
     assert cli.estimate_usd(40) == 3.33
+
+
+def test_cli_works_on_a_brand_new_database(tmp_path, capsys, monkeypatch):
+    """The preview crashed on a fresh database because the tables did not exist yet."""
+    monkeypatch.setenv("DB_URL", f"sqlite+aiosqlite:///{tmp_path / 'brand_new.db'}")
+    assert cli.main(["make", "Cozy mugs", "--count", "2"]) == 0
+    assert "estimated cost" in capsys.readouterr().out
+    assert cli.main(["list"]) == 0

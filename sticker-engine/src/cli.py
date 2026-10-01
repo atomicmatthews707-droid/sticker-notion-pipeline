@@ -45,6 +45,7 @@ def _request(args) -> dict:
 
 
 def make(args) -> int:
+    db.init_db_sync()  # a brand-new database has no tables yet
     fields = _request(args)
     cost = estimate_usd(fields["count"])
     print(f"Pack: {fields['name']}  |  stickers: {fields['count']}  |  estimated cost: up to ${cost:.2f}")
@@ -55,7 +56,6 @@ def make(args) -> int:
 
     from src import main
 
-    db.init_db_sync()
     if not main._check_budget():
         print("Daily budget already reached. Nothing was generated.")
         return 1
@@ -79,6 +79,7 @@ def list_packs(_args) -> int:
 def review(args) -> int:
     from src.packaging.review_page import write_review
 
+    db.init_db_sync()
     print(write_review(args.id))
     return 0
 
