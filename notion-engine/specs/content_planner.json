@@ -1,0 +1,613 @@
+{
+  "template_name": "Content Engine OS",
+  "databases": [
+    {
+      "name": "Content Repository",
+      "properties": [
+        {
+          "name": "Post Title",
+          "type": "title"
+        },
+        {
+          "name": "Platform",
+          "type": "select"
+        },
+        {
+          "name": "Status",
+          "type": "select"
+        },
+        {
+          "name": "Publish Date",
+          "type": "date"
+        },
+        {
+          "name": "Campaign",
+          "type": "relation",
+          "target_db": "Campaigns & Themes"
+        },
+        {
+          "name": "Brand Partner",
+          "type": "relation",
+          "target_db": "Brand Partners"
+        },
+        {
+          "name": "Estimated Hours",
+          "type": "number"
+        },
+        {
+          "name": "Live URL",
+          "type": "url"
+        },
+        {
+          "name": "Published",
+          "type": "formula",
+          "expression": "prop(\"Status\") == \"Published\""
+        }
+      ],
+      "views": [
+        {
+          "name": "Editorial Calendar",
+          "type": "calendar",
+          "date_property": "Publish Date",
+          "sorts": [
+            {
+              "property": "Publish Date",
+              "direction": "ascending"
+            }
+          ]
+        },
+        {
+          "name": "Production Pipeline",
+          "type": "board",
+          "group_by_property": "Status"
+        },
+        {
+          "name": "Published Library",
+          "type": "table",
+          "filter": {
+            "property": "Status",
+            "select": {
+              "equals": "Published"
+            }
+          },
+          "sorts": [
+            {
+              "property": "Publish Date",
+              "direction": "descending"
+            }
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Post Title": "10 Minimalist Desk Setups to Boost Productivity",
+          "Platform": "YouTube",
+          "Status": "Published",
+          "Publish Date": "2024-03-01",
+          "Campaign": "Spring Workspace Refresh",
+          "Brand Partner": "Keychron",
+          "Estimated Hours": 12,
+          "Live URL": "https://youtube.com/watch?v=sample1"
+        },
+        {
+          "Post Title": "How I Organize My Entire Life in Notion (2024 Walkthrough)",
+          "Platform": "YouTube",
+          "Status": "Ready to Publish",
+          "Publish Date": "2024-03-08",
+          "Campaign": "Productivity Systems Deep Dive",
+          "Brand Partner": "Notion",
+          "Estimated Hours": 16,
+          "Live URL": "https://youtube.com/watch?v=sample2"
+        },
+        {
+          "Post Title": "5 Morning Habits That Saved Me 10 Hours a Week",
+          "Platform": "Newsletter",
+          "Status": "Drafting",
+          "Publish Date": "2024-03-12",
+          "Campaign": "Productivity Systems Deep Dive",
+          "Brand Partner": "Athletic Greens",
+          "Estimated Hours": 4,
+          "Live URL": "https://newsletter.example.com/issue-42"
+        },
+        {
+          "Post Title": "Carousel: The Ultimate Micro-SaaS Tech Stack",
+          "Platform": "LinkedIn",
+          "Status": "Idea",
+          "Publish Date": "2024-03-15",
+          "Campaign": "Spring Workspace Refresh",
+          "Estimated Hours": 3,
+          "Live URL": "https://linkedin.com/feed/update/sample"
+        },
+        {
+          "Post Title": "A Day in the Life of a Remote Founder (Reel)",
+          "Platform": "Instagram",
+          "Status": "Review",
+          "Publish Date": "2024-03-18",
+          "Campaign": "Spring Workspace Refresh",
+          "Brand Partner": "Rise Desks",
+          "Estimated Hours": 5,
+          "Live URL": "https://instagram.com/reel/sample4"
+        }
+      ]
+    },
+    {
+      "name": "Campaigns & Themes",
+      "properties": [
+        {
+          "name": "Campaign Name",
+          "type": "title"
+        },
+        {
+          "name": "Quarter",
+          "type": "select"
+        },
+        {
+          "name": "Status",
+          "type": "select"
+        },
+        {
+          "name": "Target Deliverables",
+          "type": "number"
+        },
+        {
+          "name": "Content Pieces",
+          "type": "relation",
+          "target_db": "Content Repository"
+        },
+        {
+          "name": "Total Scheduled",
+          "type": "rollup",
+          "relation_name": "Content Pieces",
+          "rollup_property_name": "Post Title",
+          "function": "count"
+        },
+        {
+          "name": "Core Message",
+          "type": "rich_text"
+        }
+      ],
+      "views": [
+        {
+          "name": "Active Campaigns",
+          "type": "table",
+          "filter": {
+            "property": "Status",
+            "select": {
+              "equals": "Active"
+            }
+          },
+          "sorts": [
+            {
+              "property": "Quarter",
+              "direction": "ascending"
+            }
+          ]
+        },
+        {
+          "name": "Quarterly Roadmap",
+          "type": "board",
+          "group_by_property": "Quarter"
+        },
+        {
+          "name": "All Campaigns",
+          "type": "list"
+        }
+      ],
+      "sample_rows": [
+        {
+          "Campaign Name": "Spring Workspace Refresh",
+          "Quarter": "Q1",
+          "Status": "Active",
+          "Target Deliverables": 8,
+          "Content Pieces": [
+            "10 Minimalist Desk Setups to Boost Productivity",
+            "Carousel: The Ultimate Micro-SaaS Tech Stack",
+            "A Day in the Life of a Remote Founder (Reel)"
+          ],
+          "Core Message": "Focusing on ergonomic gear, decluttering, and digital workspace hygiene."
+        },
+        {
+          "Campaign Name": "Productivity Systems Deep Dive",
+          "Quarter": "Q1",
+          "Status": "Active",
+          "Target Deliverables": 6,
+          "Content Pieces": [
+            "How I Organize My Entire Life in Notion (2024 Walkthrough)",
+            "5 Morning Habits That Saved Me 10 Hours a Week"
+          ],
+          "Core Message": "Demystifying deep work routines and personal knowledge management."
+        },
+        {
+          "Campaign Name": "Mid-Year Creator Monetization",
+          "Quarter": "Q2",
+          "Status": "Planning",
+          "Target Deliverables": 10,
+          "Content Pieces": [],
+          "Core Message": "Strategies for diversifying digital income streams through sponsorships and courses."
+        },
+        {
+          "Campaign Name": "Black Friday Hardware Roundup",
+          "Quarter": "Q4",
+          "Status": "Planning",
+          "Target Deliverables": 12,
+          "Content Pieces": [],
+          "Core Message": "Curated tech, desk accessories, and software discounts for knowledge workers."
+        }
+      ]
+    },
+    {
+      "name": "Brand Partners",
+      "properties": [
+        {
+          "name": "Brand Name",
+          "type": "title"
+        },
+        {
+          "name": "Contact Person",
+          "type": "rich_text"
+        },
+        {
+          "name": "Contact Email",
+          "type": "email"
+        },
+        {
+          "name": "Deal Value",
+          "type": "number"
+        },
+        {
+          "name": "Deal Stage",
+          "type": "select"
+        },
+        {
+          "name": "Sponsored Content",
+          "type": "relation",
+          "target_db": "Content Repository"
+        },
+        {
+          "name": "Deliverable Count",
+          "type": "rollup",
+          "relation_name": "Sponsored Content",
+          "rollup_property_name": "Post Title",
+          "function": "count"
+        }
+      ],
+      "views": [
+        {
+          "name": "Sponsorship Pipeline",
+          "type": "board",
+          "group_by_property": "Deal Stage"
+        },
+        {
+          "name": "All Partners",
+          "type": "table",
+          "sorts": [
+            {
+              "property": "Deal Value",
+              "direction": "descending"
+            }
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Brand Name": "Keychron",
+          "Contact Person": "Liam Vance",
+          "Contact Email": "partnerships@keychron.com",
+          "Deal Value": 2500,
+          "Deal Stage": "Closed Won",
+          "Sponsored Content": [
+            "10 Minimalist Desk Setups to Boost Productivity"
+          ]
+        },
+        {
+          "Brand Name": "Notion",
+          "Contact Person": "Elena Rostova",
+          "Contact Email": "creator-relations@makenotion.com",
+          "Deal Value": 4000,
+          "Deal Stage": "Closed Won",
+          "Sponsored Content": [
+            "How I Organize My Entire Life in Notion (2024 Walkthrough)"
+          ]
+        },
+        {
+          "Brand Name": "Athletic Greens",
+          "Contact Person": "Marcus Bell",
+          "Contact Email": "mbell@athleticgreens.com",
+          "Deal Value": 1800,
+          "Deal Stage": "In Negotiation",
+          "Sponsored Content": [
+            "5 Morning Habits That Saved Me 10 Hours a Week"
+          ]
+        },
+        {
+          "Brand Name": "Rise Desks",
+          "Contact Person": "Chloe Jenkins",
+          "Contact Email": "marketing@risedesks.io",
+          "Deal Value": 2200,
+          "Deal Stage": "Contract Sent",
+          "Sponsored Content": [
+            "A Day in the Life of a Remote Founder (Reel)"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Content Ideas Backlog",
+      "properties": [
+        {
+          "name": "Idea Title",
+          "type": "title"
+        },
+        {
+          "name": "Pillar",
+          "type": "select"
+        },
+        {
+          "name": "Target Platform",
+          "type": "multi_select"
+        },
+        {
+          "name": "Effort Level",
+          "type": "select"
+        },
+        {
+          "name": "Validated",
+          "type": "checkbox"
+        },
+        {
+          "name": "Source Reference",
+          "type": "url"
+        },
+        {
+          "name": "Related Campaign",
+          "type": "relation",
+          "target_db": "Campaigns & Themes"
+        }
+      ],
+      "views": [
+        {
+          "name": "Brainstorm Board",
+          "type": "board",
+          "group_by_property": "Pillar"
+        },
+        {
+          "name": "Unvalidated Quick List",
+          "type": "table",
+          "filter": {
+            "property": "Validated",
+            "checkbox": {
+              "equals": false
+            }
+          }
+        },
+        {
+          "name": "Low Effort Wins",
+          "type": "table",
+          "filter": {
+            "property": "Effort Level",
+            "select": {
+              "equals": "Low"
+            }
+          }
+        }
+      ],
+      "sample_rows": [
+        {
+          "Idea Title": "Why you should never check email before 11 AM",
+          "Pillar": "Productivity",
+          "Target Platform": [
+            "Newsletter",
+            "LinkedIn"
+          ],
+          "Effort Level": "Low",
+          "Validated": true,
+          "Source Reference": "https://calnewport.com/blog",
+          "Related Campaign": "Productivity Systems Deep Dive"
+        },
+        {
+          "Idea Title": "Tour of my portable nomadic remote work bag",
+          "Pillar": "Tech & Gear",
+          "Target Platform": [
+            "YouTube",
+            "Instagram"
+          ],
+          "Effort Level": "High",
+          "Validated": true,
+          "Source Reference": "https://carryology.com",
+          "Related Campaign": "Spring Workspace Refresh"
+        },
+        {
+          "Idea Title": "3 books that changed how I run digital businesses",
+          "Pillar": "Entrepreneurship",
+          "Target Platform": [
+            "LinkedIn",
+            "Instagram"
+          ],
+          "Effort Level": "Low",
+          "Validated": false,
+          "Source Reference": "https://goodreads.com"
+        },
+        {
+          "Idea Title": "Stop using bullet journals until you watch this",
+          "Pillar": "Productivity",
+          "Target Platform": [
+            "YouTube"
+          ],
+          "Effort Level": "Medium",
+          "Validated": false,
+          "Source Reference": "https://bulletjournal.com"
+        }
+      ]
+    }
+  ],
+  "root_page": {
+    "title": "Content Engine OS",
+    "sections": [
+      {
+        "type": "callout",
+        "text": "Welcome to Content Engine OS! This dashboard unifies your content pipeline, seasonal campaigns, sponsorships, and ideas into one cohesive publishing engine."
+      },
+      {
+        "type": "heading_1",
+        "text": "Weekly Focus & Immediate Priorities"
+      },
+      {
+        "type": "paragraph",
+        "text": "Check off high-leverage production tasks before moving on to new brainstorm sessions."
+      },
+      {
+        "type": "to_do",
+        "text": "Finalize draft script for Notion 2024 walkthrough video"
+      },
+      {
+        "type": "to_do",
+        "text": "Review sponsored contract deliverables with Athletic Greens"
+      },
+      {
+        "type": "to_do",
+        "text": "Schedule Instagram Reels for next Monday through Wednesday"
+      },
+      {
+        "type": "divider",
+        "text": ""
+      },
+      {
+        "type": "heading_2",
+        "text": "Publishing Master Workflow"
+      },
+      {
+        "type": "numbered_list",
+        "text": "1. Brainstorm & capture inspirations in the Content Ideas Backlog."
+      },
+      {
+        "type": "numbered_list",
+        "text": "2. Align validated ideas with a quarterly theme in Campaigns & Themes."
+      },
+      {
+        "type": "numbered_list",
+        "text": "3. Promote concepts into the Content Repository to schedule dates and track production stages."
+      },
+      {
+        "type": "numbered_list",
+        "text": "4. Link commercial deals via Brand Partners to keep sponsored deliverables accountable."
+      },
+      {
+        "type": "quote",
+        "text": "\"Consistency is not about perfection every day; it's about eliminating the friction between idea and execution.\""
+      }
+    ]
+  },
+  "sub_pages": [
+    {
+      "title": "How to Use This Template",
+      "sections": [
+        {
+          "type": "heading_1",
+          "text": "System Architecture Overview"
+        },
+        {
+          "type": "paragraph",
+          "text": "Content Engine OS relies on four tightly coupled databases that eliminate duplicate data entry and streamline creator operations."
+        },
+        {
+          "type": "heading_2",
+          "text": "Database Breakdown"
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Content Repository: The operational heartbeat. Holds all individual pieces across all channels with date tracking and production stages."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Campaigns & Themes: High-level strategic groups (e.g., quarterly themes, product launches) aggregating multiple posts."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Brand Partners: CRM for inbound and outbound sponsorships, track revenue per deliverable and client contacts."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Content Ideas Backlog: Zero-friction scratchpad for raw ideas and bookmarks before they enter active production."
+        },
+        {
+          "type": "heading_2",
+          "text": "Pro-Tips for Creators"
+        },
+        {
+          "type": "callout",
+          "text": "Keep your Ideas Backlog separate from your Calendar. Only drag ideas into the Content Repository when you have committed to a scheduled publishing date."
+        }
+      ]
+    },
+    {
+      "title": "Repurposing & Distribution Playbook",
+      "sections": [
+        {
+          "type": "heading_1",
+          "text": "The 1-to-5 Atomization Rule"
+        },
+        {
+          "type": "paragraph",
+          "text": "Never publish a long-form piece of content without deriving at least 5 micro-assets from it. Maximize your output without extra filming time."
+        },
+        {
+          "type": "heading_2",
+          "text": "Standard Repurposing Matrix"
+        },
+        {
+          "type": "bulleted_list",
+          "text": "YouTube Longform -> 3 Shorts / TikToks (highlighting specific tips or punchlines)."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Script Outline -> 1 In-depth LinkedIn slide carousel or Twitter/X thread."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Key Takeaways -> Weekend Newsletter edition linking back to the primary asset."
+        },
+        {
+          "type": "callout",
+          "text": "When creating derivative posts, create separate rows in the Content Repository and connect them to the same Campaign for holistic attribution."
+        }
+      ]
+    },
+    {
+      "title": "Sponsorship & Rate Card Guide",
+      "sections": [
+        {
+          "type": "heading_1",
+          "text": "Monetization Guidelines"
+        },
+        {
+          "type": "paragraph",
+          "text": "Use these baseline rates and deliverable terms when quoting inbound brands or pitching sponsors."
+        },
+        {
+          "type": "heading_2",
+          "text": "Current Rate Card"
+        },
+        {
+          "type": "bulleted_list",
+          "text": "YouTube Dedicated Video: $3,500 - $5,000 (Includes 1 integration + link in top 3 lines)."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "YouTube Mid-Roll Integration (60-90s): $1,800 - $2,500."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Newsletter Primary Sponsor: $800 - $1,200 per issue."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "LinkedIn Sponsored Post: $1,000 - $1,500 per carousel."
+        },
+        {
+          "type": "quote",
+          "text": "Always invoice 50% upfront upon contract signing and 50% within 14 days of publishing the live piece."
+        }
+      ]
+    }
+  ]
+}

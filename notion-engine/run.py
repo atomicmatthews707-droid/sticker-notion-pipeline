@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from engine.cover_art import generate_cover_prompts
 from engine.listing_writer import generate_listing
 from engine.notion_builder import build_template
-from engine.spec_generator import generate_spec
+from engine.spec_generator import _validate_spec, generate_spec
 
 CATALOG_FIELDS = ["Niche", "Slug", "Status", "Notion URL", "Skipped", "Error"]
 
@@ -36,15 +36,29 @@ def _append_catalog(row: dict) -> None:
         writer.writerow(row)
 
 
-def process_niche(niche: str, dry_run: bool) -> dict:
+def load_spec(path: str) -> dict:
+    """Load a hand-edited spec file and validate it exactly like a generated one."""
+    with open(path, "r", encoding="utf-8") as f:
+        spec = json.load(f)
+    errors = _validate_spec(spec)
+    if errors:
+        raise ValueError(f"Spec {path} is invalid:\n- " + "\n- ".join(errors))
+    return spec
+
+
+def process_niche(niche: str, dry_run: bool, spec_path: str | None = None) -> dict:
     """Run the full pipeline for one niche. Raises on failure; the caller isolates it."""
     print(f"\nProcessing niche: {niche}")
     slug = slugify(niche)
     out_dir = os.path.join("output", slug)
     os.makedirs(out_dir, exist_ok=True)
 
-    print("1. Generating spec...")
-    spec = generate_spec(niche, dry_run=dry_run)
+    if spec_path:
+        print(f"1. Loading spec from {spec_path} (no AI, deterministic)...")
+        spec = load_spec(spec_path)
+    else:
+        print("1. Generating spec...")
+        spec = generate_spec(niche, dry_run=dry_run)
     _write(os.path.join(out_dir, "spec.json"), json.dumps(spec, indent=2))
 
     print("2. Generating listing...")
@@ -80,6 +94,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Notion Template Engine")
     parser.add_argument("--niche", type=str, help="Single niche to process")
     parser.add_argument("--niches-file", type=str, help="Path to text file containing niches (one per line)")
+    parser.add_argument("--spec", type=str, help="Build from this spec JSON file instead of generating one (deterministic)")
     parser.add_argument("--dry-run", action="store_true", help="Skip Notion API and just save generated specs")
     args = parser.parse_args()
 
@@ -92,15 +107,18 @@ def main() -> int:
         with open(args.niches_file, "r", encoding="utf-8") as f:
             niches.extend(line.strip() for line in f if line.strip())
 
+    if args.spec:
+        label = os.path.splitext(os.path.basename(args.spec))[0]
+        niches = [args.niche or label]
     if not niches:
-        print("Error: Must provide --niche or --niches-file")
+        print("Error: Must provide --niche, --niches-file or --spec")
         return 1
 
     os.makedirs("output", exist_ok=True)
     failures = 0
     for niche in niches:
         try:
-            res = process_niche(niche, args.dry_run)
+            res = process_niche(niche, args.dry_run, args.spec)
             _append_catalog({
                 "Niche": niche, "Slug": res["slug"], "Status": "Success" if not res["skipped"] else "Partial",
                 "Notion URL": res["root_url"], "Skipped": len(res["skipped"]), "Error": "",

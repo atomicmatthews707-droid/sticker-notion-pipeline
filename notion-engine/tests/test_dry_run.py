@@ -32,7 +32,7 @@ def test_failed_niche_does_not_abort_batch(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     calls = []
 
-    def fake(niche, dry_run):
+    def fake(niche, dry_run, spec_path=None):
         calls.append(niche)
         if niche == "bad":
             raise RuntimeError("boom")
@@ -52,3 +52,30 @@ def test_failed_niche_does_not_abort_batch(tmp_path, monkeypatch):
 def test_no_niche_is_an_error(monkeypatch):
     monkeypatch.setattr("sys.argv", ["run.py", "--dry-run"])
     assert run.main() == 1
+
+
+def test_spec_file_is_used_without_ai(tmp_path, monkeypatch):
+    import json
+
+    from engine.spec_generator import _mock_spec
+
+    monkeypatch.chdir(tmp_path)
+    spec = _mock_spec("Hand Made")
+    spec["databases"][0]["name"] = "My Edited Tasks"
+    (tmp_path / "hand_made.json").write_text(json.dumps(spec))
+    monkeypatch.setattr(run, "generate_spec", lambda *a, **k: (_ for _ in ()).throw(AssertionError("AI called")))
+    monkeypatch.setattr("sys.argv", ["run.py", "--dry-run", "--spec", "hand_made.json"])
+    assert run.main() == 0
+    saved = json.loads((tmp_path / "output" / "hand_made" / "spec.json").read_text())
+    assert saved["databases"][0]["name"] == "My Edited Tasks"
+
+
+def test_invalid_spec_file_fails_with_reasons(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.chdir(tmp_path)
+    bad = {"databases": [{"name": "D", "properties": [{"name": "X", "type": "number"}]}]}
+    (tmp_path / "bad.json").write_text(json.dumps(bad))
+    monkeypatch.setattr("sys.argv", ["run.py", "--dry-run", "--spec", "bad.json"])
+    assert run.main() == 1
+    assert "exactly one 'title'" in (tmp_path / "output" / "catalog.csv").read_text()
