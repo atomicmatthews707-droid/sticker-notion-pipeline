@@ -29,6 +29,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from pydantic import BaseModel
 
 from src.shared import config
 from src.publisher import PublishUnavailable
@@ -63,7 +64,12 @@ def _load_or_build_prompts(niche_id: int, niche_name: str) -> list[str]:
         return json.loads(path.read_text(encoding="utf-8"))
     from src.generator.prompt_builder import build_prompts
 
-    prompts = build_prompts(niche_name)
+    niche = db.get_niche(niche_id) or {}
+    prompts = build_prompts(
+        niche_name, brief=niche.get("brief") or "", style=niche.get("style") or "",
+        count=niche.get("target_count"), subjects=niche.get("subjects"), niche_id=niche_id,
+        pack_md=niche.get("pack_md") or "",
+    )
     if not prompts:
         raise RuntimeError("prompt_builder returned no prompts")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +95,13 @@ def _stage_generate(niche_id: int, niche_name: str) -> None:
     if remaining == 0:
         raise RuntimeError("Style guard rejected every generated image")
     logger.info("GENERATING done: %d/%d images passed the style guard", remaining, len(pending))
+
+
+def _minimum_pack_size(niche_id: int) -> int:
+    """Fewest kept stickers worth packaging. A small requested pack needs only most of what was asked for."""
+    configured = config.int_setting("MIN_PACK_IMAGES", "packaging.min_images", 10)
+    requested = (db.get_niche(niche_id) or {}).get("target_count")
+    return configured if not requested else min(configured, max(1, round(requested * 0.6)))
 
 
 def _stage_filter(niche_id: int, niche_name: str) -> None:
@@ -121,7 +134,7 @@ def _stage_filter(niche_id: int, niche_name: str) -> None:
             db.update_image(img["id"], kept=False, qa_reason="duplicate")
 
     final = len(db.get_images_for_niche(niche_id, kept=True))
-    minimum = config.int_setting("MIN_PACK_IMAGES", "packaging.min_images", 10)
+    minimum = _minimum_pack_size(niche_id)
     if final < minimum:
         raise RuntimeError(f"Too few images survived filtering: {final} (need at least {minimum})")
     logger.info("FILTERING done: %d images ready to package", final)
@@ -173,7 +186,11 @@ def _stage_list(niche_id: int, niche_name: str) -> None:
         listing = json.loads(listing_file.read_text(encoding="utf-8"))  # reuse: copy is generated (and paid for) once
     else:
         image_paths = [i["image_path"] for i in db.get_images_for_niche(niche_id, kept=True)]
-        listing = write_listing(niche_name, image_paths, sample_subjects=_sample_subjects(niche_id))
+        listing = write_listing(
+            niche_name, image_paths, sample_subjects=_sample_subjects(niche_id),
+            brief=(db.get_niche(niche_id) or {}).get("brief") or "", niche_id=niche_id,
+            pack_md=(db.get_niche(niche_id) or {}).get("pack_md") or "",
+        )
         listing_file.write_text(json.dumps(listing, indent=2), encoding="utf-8")
 
     mockups = sorted(str(p) for p in out_dir.glob("mockup_*.jpg"))
@@ -212,7 +229,23 @@ def _run_pipeline_for_niche(niche_id: int, niche_name: str, start_status: Option
     ]
     first = STAGE_ORDER.index(start_status) if start_status in STAGE_ORDER else 0
 
-    for status, fn in stages[first:]:
+    outcome = _run_stages(niche_id, niche_name, stages[first:])
+    _refresh_review(niche_id)
+    return outcome
+
+
+def _refresh_review(niche_id: int) -> None:
+    """Rebuild the pack review page; a problem here must never affect the pipeline."""
+    try:
+        from src.packaging.review_page import write_review
+
+        write_review(niche_id)
+    except Exception as e:
+        logger.warning("Could not write the review page for niche %s: %s", niche_id, e)
+
+
+def _run_stages(niche_id: int, niche_name: str, stages: list) -> str:
+    for status, fn in stages:
         try:
             db.update_niche_status(niche_id, status)
             fn(niche_id, niche_name)
@@ -276,8 +309,7 @@ def _maybe_refresh_trends() -> None:
             top = rank(signals, recent_check=db.recently_published)
             queued = db.queue_niches(top)
             logger.info("Queued %d of %d ranked niches", queued, len(top))
-        else:
-            _load_seed_niches()
+        _load_seed_niches()  # the wishlist in config/niche_seeds.yaml is always queued, whatever the scouts found
     except Exception as e:
         logger.warning("Trend refresh failed: %s; loading seeds", e)
         _load_seed_niches()
@@ -375,6 +407,47 @@ async def tick():
     if not DISABLE_LOOP:
         return {"status": "loop_running"}
     return await asyncio.get_running_loop().run_in_executor(None, _run_cycle)
+
+
+class PackRequest(BaseModel):
+    name: str = ""
+    markdown: str = ""      # a whole pack file; its title, count, brief and subjects are used
+    brief: str = ""
+    style: str = ""
+    count: Optional[int] = None
+    subjects: Optional[list[str]] = None
+
+
+@app.post("/niches", dependencies=[Depends(require_token)])
+async def request_pack(req: PackRequest):
+    """Ask for a specific pack. It goes to the front of the queue."""
+    from src.shared.banned import is_banned
+
+    if req.markdown.strip():
+        from src.shared.design import request_from_markdown
+
+        try:
+            fields = request_from_markdown(req.markdown)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        req = PackRequest(**{k: v for k, v in fields.items() if k != "pack_md"})
+        req_md = fields["pack_md"]
+    else:
+        req_md = ""
+    if not 1 <= len(req.name.strip()) <= 120:
+        raise HTTPException(422, "name must be 1-120 characters")
+    if req.count is not None and not 1 <= req.count <= 60:
+        raise HTTPException(422, "count must be between 1 and 60")
+    if req.subjects and (len(req.subjects) > 60 or any(not 2 <= len(x) <= 120 for x in req.subjects)):
+        raise HTTPException(422, "subjects: at most 60, each 2-120 characters")
+    for text in (req.name, req.brief, req.style, *(req.subjects or [])):
+        if text and is_banned(text):
+            raise HTTPException(422, f"banned term in the request: {text!r}")
+    try:
+        niche_id = db.queue_request(req.name, req.brief, req.style, req.count, req.subjects, pack_md=req_md)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"status": "queued", "id": niche_id}
 
 
 @app.post("/digest/send", dependencies=[Depends(require_token)])

@@ -28,6 +28,24 @@ def render_for_review(path: str) -> bytes:
     return out.getvalue()
 
 
+def _direction_rules(images: list[dict]) -> str:
+    """Extra rules from DESIGN.md and the pack file. Empty (so the rubric is unchanged) when there are none."""
+    from src.shared.design import direction_for
+
+    niche = db.get_niche(images[0]["niche_id"]) if images else None
+    d = direction_for((niche or {}).get("pack_md"))
+    lines = []
+    if d.avoid:
+        lines.append(f"- Score 3 or lower if the sticker shows any of: {d.avoid}")
+    if d.palette:
+        lines.append(f"- Deduct 1 point if the colours clearly depart from this palette: {d.palette}")
+    if d.style and d.style != config.get("sticker_style", {}).get("aesthetic"):
+        lines.append(f"- The intended style is: {d.style}")
+    if d.notes:
+        lines.append(f"- Shop notes: {d.notes}")
+    return "\n\nThis shop's art direction. Enforce it too:\n" + "\n".join(lines) if lines else ""
+
+
 def _parse_score(data) -> tuple[float, str]:
     """Pull (score 0-10, reason) from the model's JSON, or raise ValueError."""
     if not isinstance(data, dict) or "score" not in data:
@@ -45,8 +63,8 @@ def filter_batch(images: list[dict], niche: str, client: Optional[GeminiClient] 
     Raises BudgetExceeded after saving partial results, and RuntimeError if API errors left images unjudged
     (those stay pending and are retried on the next run).
     """
-    client = client or GeminiClient()
-    system = _RUBRIC.read_text(encoding="utf-8")
+    client = client or GeminiClient(niche_id=images[0].get("niche_id") if images else None)
+    system = _RUBRIC.read_text(encoding="utf-8") + _direction_rules(images)
     min_score = float(config.get("qa.min_score", 7))
     stats = {"scored": 0, "kept": 0, "rejected": 0}
     api_errors = 0

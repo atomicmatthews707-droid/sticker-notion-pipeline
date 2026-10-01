@@ -45,6 +45,30 @@ Measured on a 5-sticker run: about $0.42 for 5 generated stickers ($0.335 images
 text). The vision QA costs about $0.016 per image, more than the handoff estimated, because the model spends tokens
 thinking. Extrapolated to 40 stickers per pack: roughly $3.40 before rejects.
 
+## Ask for a pack (and change how it looks)
+
+Everything is plain markdown, so you can edit it like a document.
+
+- **`DESIGN.md`**: the shop-wide look. Sections: Style, Composition, Palette, Avoid, Voice, Notes. It feeds every image
+  prompt, the quality filter and the listing text. The file shipped here reproduces the test runs exactly.
+- **`packs/<name>.md`**: one pack. Copy `packs/_TEMPLATE.md`. Only the title is required. Add `count: 5`, a Brief in your
+  own words, an exact Subjects list (the AI then does not brainstorm), and any Style, Palette, Avoid or Voice overrides.
+- The white background is fixed on purpose (cutout depends on it) and is not editable.
+
+```bash
+python -m src.cli make packs/autumn-cozy-vibes.md        # prints the estimated cost and builds nothing
+python -m src.cli make packs/autumn-cozy-vibes.md --yes  # spends the money and builds the pack
+python -m src.cli list                                    # packs and their status
+python -m src.cli review 3                                # rebuild pack 3's review page
+```
+
+Or send the file to a running engine: `POST /niches` with `{"markdown": "<the file's text>"}`.
+
+Every finished pack gets a `review.html` next to it: each sticker on white, dark, colour and transparent backgrounds
+with its quality score, the listing images, the listing text and what the run cost.
+
+The default daily spending cap is $2 (`budget.daily_limit_usd`). Raise it when you add credit.
+
 ## Setup
 
 ```bash

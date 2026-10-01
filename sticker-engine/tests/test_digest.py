@@ -34,7 +34,8 @@ def test_other_days_are_excluded():
     assert db.digest_data("2020-01-01")["images_generated"] == 0
 
 
-def test_html_reports_the_facts_and_escapes_names():
+def test_html_reports_the_facts_and_escapes_names(monkeypatch):
+    monkeypatch.setenv("BUDGET_DAILY_LIMIT_USD", "10")
     seed_day()
     html = digest.render_digest()
     assert "Ready for you to publish" in html and "Publish kit ready: /k/alpha" in html

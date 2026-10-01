@@ -7,6 +7,7 @@ from typing import Optional
 from src.shared import config
 from src.shared.banned import is_banned
 from src.shared.compliance import ensure_disclosure
+from src.shared.design import direction_for
 from src.shared.gemini_client import GeminiClient, GeminiError
 from src.shared.logger import get_logger
 
@@ -65,13 +66,17 @@ def _pixel_size(image_paths: list[str]) -> str:
 
 
 def write_listing(niche: str, image_paths: list[str], sample_subjects: Optional[list[str]] = None,
-                  client: Optional[GeminiClient] = None, max_attempts: int = 3) -> dict:
+                  client: Optional[GeminiClient] = None, max_attempts: int = 3, brief: str = "",
+                  niche_id: Optional[int] = None, pack_md: str = "") -> dict:
     """Generate and validate listing copy. The AI-disclosure line is enforced in code, not trusted to the model."""
-    client = client or GeminiClient()
+    client = client or GeminiClient(niche_id=niche_id)
     count = len(image_paths)
     system = Path(_PROMPT).read_text(encoding="utf-8")
+    voice = direction_for(pack_md).voice
     size = _pixel_size(image_paths)
-    prompt = (f"Niche: {niche}\nNumber of stickers in the pack: {count}\n"
+    prompt = (f"Niche: {niche}\n" + (f"What the pack is for (use for tone and theme): {brief}\n" if brief else "")
+              + (f"Write in this voice: {voice}\n" if voice else "")
+              + f"Number of stickers in the pack: {count}\n"
               f"Each sticker PNG is {size} pixels with a transparent background.\n"
               f"A few sample sticker subjects (the pack has {count}, this is not the full list): "
               f"{', '.join((sample_subjects or [])[:8]) or 'n/a'}")

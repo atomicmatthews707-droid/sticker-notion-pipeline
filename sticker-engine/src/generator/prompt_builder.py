@@ -4,6 +4,7 @@ from typing import Optional
 
 from src.shared import config
 from src.shared.banned import is_banned
+from src.shared.design import Direction, direction_for
 from src.shared.gemini_client import GeminiClient
 from src.shared.logger import get_logger
 
@@ -12,11 +13,16 @@ _PROMPT_FILE = config.ROOT / "config" / "prompts" / "prompt_builder.md"
 SIMILARITY_LIMIT = 0.85
 
 
-def compose_prompt(subject: str) -> str:
-    """Final image prompt: subject, then the shared style, background and composition from config."""
-    style = config.get("sticker_style", {})
-    parts = [subject, style.get("aesthetic"), style.get("background"), style.get("composition")]
-    return ", ".join(p for p in parts if p)
+def compose_prompt(subject: str, direction: Optional[Direction] = None, style: str = "") -> str:
+    """
+    Final image prompt: subject, style, palette, the fixed white background, composition, then what to avoid.
+    The white background is fixed on purpose: the cutout step depends on it.
+    """
+    d = direction or direction_for(style=style)
+    background = config.get("sticker_style", {}).get("background", "")
+    parts = [subject, style.strip() or d.style, d.palette, background, d.composition]
+    prompt = ", ".join(p for p in parts if p)
+    return f"{prompt}. Avoid: {d.avoid}" if d.avoid else prompt
 
 
 def clean_subjects(raw: list, limit: Optional[int] = None) -> list[str]:
@@ -35,14 +41,32 @@ def clean_subjects(raw: list, limit: Optional[int] = None) -> list[str]:
     return kept[:limit] if limit else kept
 
 
-def build_prompts(niche: str, client: Optional[GeminiClient] = None) -> list[str]:
-    """Ask the text model for distinct sticker subjects for a niche and turn them into image prompts."""
-    count = config.int_setting("SUBJECTS_PER_NICHE", "generator.subjects_per_niche", 40)
-    if is_banned(niche):
-        raise ValueError(f"Niche {niche!r} contains a banned term")
-    client = client or GeminiClient()
-    system = Path(_PROMPT_FILE).read_text(encoding="utf-8")
-    data = client.generate_json(f"Niche: {niche}\nGenerate {count} distinct sticker subjects.", system=system)
-    raw = data.get("subjects", []) if isinstance(data, dict) else data
-    subjects = clean_subjects(raw, limit=count)
-    return [compose_prompt(s) for s in subjects]
+def build_prompts(niche: str, client: Optional[GeminiClient] = None, brief: str = "", style: str = "",
+                  count: Optional[int] = None, subjects: Optional[list] = None, niche_id: Optional[int] = None,
+                  pack_md: str = "") -> list[str]:
+    """
+    Image prompts for a pack. With an exact subjects list the AI is not asked to brainstorm; otherwise the text
+    model proposes `count` distinct subjects, guided by the brief and the art direction. Banned terms are refused.
+    """
+    count = count or config.int_setting("SUBJECTS_PER_NICHE", "generator.subjects_per_niche", 40)
+    direction = direction_for(pack_md, brief=brief, style=style)
+    for text in (niche, direction.brief, direction.style, direction.palette, *(subjects or [])):
+        if text and is_banned(str(text)):
+            raise ValueError(f"The request contains a banned term: {text!r}")
+
+    if subjects:
+        chosen = clean_subjects(subjects, limit=count)
+    else:
+        client = client or GeminiClient(niche_id=niche_id)
+        system = Path(_PROMPT_FILE).read_text(encoding="utf-8")
+        ask = f"Niche: {niche}\n"
+        if direction.brief:
+            ask += f"What the customer wants (follow this closely): {direction.brief}\n"
+        if direction.notes:
+            ask += f"Shop notes: {direction.notes}\n"
+        if direction.avoid:
+            ask += f"Never propose subjects involving: {direction.avoid}\n"
+        ask += f"Generate {count} distinct sticker subjects."
+        data = client.generate_json(ask, system=system)
+        chosen = clean_subjects(data.get("subjects", []) if isinstance(data, dict) else data, limit=count)
+    return [compose_prompt(s, direction) for s in chosen]

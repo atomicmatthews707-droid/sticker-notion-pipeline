@@ -26,7 +26,7 @@ generator:
   max_workers: 4
   use_batch_api: false
 budget:
-  daily_limit_usd: 10.0
+  daily_limit_usd: 2.0      # raise this when you add credit; BUDGET_DAILY_LIMIT_USD overrides it
 listings:
   listing_rate_limit_per_day: 3
   new_shop_days: 14

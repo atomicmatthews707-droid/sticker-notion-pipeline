@@ -139,7 +139,7 @@ def make_images(niche_id, tmp_path, n):
 def test_generate_stage_saves_prompts_once_and_style_rejects(monkeypatch, tmp_path):
     nid = new_niche()
     built = []
-    monkeypatch.setattr("src.generator.prompt_builder.build_prompts", lambda niche: built.append(niche) or ["p0", "p1"])
+    monkeypatch.setattr("src.generator.prompt_builder.build_prompts", lambda niche, **kw: built.append(niche) or ["p0", "p1"])
     good = tmp_path / "good.png"
     sticker_image().save(good)
     bad = tmp_path / "bad.png"
@@ -162,7 +162,7 @@ def test_generate_stage_fails_when_style_guard_rejects_everything(monkeypatch, t
     nid = new_niche()
     bad = tmp_path / "bad.png"
     sticker_image(bg=(100, 200, 255)).save(bad)
-    monkeypatch.setattr("src.generator.prompt_builder.build_prompts", lambda niche: ["p"])
+    monkeypatch.setattr("src.generator.prompt_builder.build_prompts", lambda niche, **kw: ["p"])
     monkeypatch.setattr("src.generator.image_gen.generate_images", lambda p, i: db.save_image_record(i, "p", str(bad)))
     with pytest.raises(RuntimeError, match="rejected every"):
         main._stage_generate(nid, "cats")

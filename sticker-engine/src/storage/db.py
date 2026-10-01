@@ -7,6 +7,7 @@ In-flight statuses are resumed after a crash.
 """
 
 import asyncio
+import json
 import os
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -61,7 +62,7 @@ _SCHEMA = [
     """CREATE TABLE IF NOT EXISTS niches (
         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, status TEXT, score REAL, source TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        error_msg TEXT)""",
+        error_msg TEXT, brief TEXT, style TEXT, target_count INTEGER, subjects TEXT, pack_md TEXT)""",
     """CREATE TABLE IF NOT EXISTS images (
         id INTEGER PRIMARY KEY AUTOINCREMENT, niche_id INTEGER, prompt TEXT, image_path TEXT,
         qa_score REAL, qa_reason TEXT, kept BOOLEAN,
@@ -77,12 +78,19 @@ _SCHEMA = [
 ]
 
 
+_NICHE_REQUEST_COLUMNS = {"brief": "TEXT", "style": "TEXT", "target_count": "INTEGER", "subjects": "TEXT", "pack_md": "TEXT"}
+
+
 def init_db_sync() -> None:
-    """Idempotent table creation."""
+    """Idempotent table creation, plus adding the request columns to databases made by older versions."""
     conn = _conn()
     try:
         for stmt in _SCHEMA:
             conn.execute(stmt)
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(niches)")}
+        for column, kind in _NICHE_REQUEST_COLUMNS.items():
+            if column not in have:
+                conn.execute(f"ALTER TABLE niches ADD COLUMN {column} {kind}")
         conn.commit()
     finally:
         conn.close()
@@ -129,6 +137,60 @@ def queue_niches(items: Iterable) -> int:
             inserted += 1
         conn.commit()
         return inserted
+    finally:
+        conn.close()
+
+
+REQUEST_PRIORITY = 1000.0  # requested packs jump ahead of anything the scouts queued
+
+
+def queue_request(name: str, brief: str = "", style: str = "", count: Optional[int] = None,
+                  subjects: Optional[list] = None, pack_md: str = "") -> int:
+    """
+    Queue a pack the user asked for, ahead of scouted niches. brief: free text about what is wanted;
+    style: replaces the default art style for this pack; count: number of stickers; subjects: an exact list,
+    which skips AI brainstorming. Raises ValueError if a pack with this name is already queued or running.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("A pack needs a name.")
+    marks = ",".join("?" * len(IN_FLIGHT))
+    conn = _conn()
+    try:
+        busy = conn.execute(
+            f"SELECT 1 FROM niches WHERE lower(name) = lower(?) AND status IN ('QUEUED', {marks})", (name, *IN_FLIGHT)
+        ).fetchone()
+        if busy:
+            raise ValueError(f"A pack called {name!r} is already queued or in progress.")
+        cur = conn.execute(
+            "INSERT INTO niches (name, status, score, source, updated_at, brief, style, target_count, subjects, pack_md) "
+            "VALUES (?, 'QUEUED', ?, 'request', ?, ?, ?, ?, ?, ?)",
+            (name, REQUEST_PRIORITY, _now(), brief.strip(), style.strip(), count, json.dumps(subjects) if subjects else None, pack_md),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def get_niche(niche_id: int) -> Optional[dict]:
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM niches WHERE id = ?", (niche_id,)).fetchone()
+        if not row:
+            return None
+        niche = dict(row)
+        niche["subjects"] = json.loads(niche["subjects"]) if niche.get("subjects") else None
+        return niche
+    finally:
+        conn.close()
+
+
+def list_niches(limit: int = 50) -> list[dict]:
+    conn = _conn()
+    try:
+        return [dict(r) for r in conn.execute(
+            "SELECT id, name, status, source, target_count, updated_at FROM niches ORDER BY id DESC LIMIT ?", (limit,))]
     finally:
         conn.close()
 
@@ -327,6 +389,15 @@ def get_today_spend() -> float:
             "SELECT COALESCE(SUM(cost_usd), 0.0) FROM spend_log WHERE date(created_at) = ?", (_today(),)
         ).fetchone()
         return float(row[0])
+    finally:
+        conn.close()
+
+
+def get_total_spend() -> float:
+    """Everything this database has logged, across all days."""
+    conn = _conn()
+    try:
+        return float(conn.execute("SELECT COALESCE(SUM(cost_usd), 0.0) FROM spend_log").fetchone()[0])
     finally:
         conn.close()
 
