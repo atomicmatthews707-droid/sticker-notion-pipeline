@@ -29,3 +29,8 @@ listings:
   listing_rate_limit_per_day: 3
   new_shop_days: 14
 loop_interval_seconds: 300
+packaging:
+  min_images: 10
+bg_remover:
+  method: rembg            # rembg | floodfill (no-ML fallback; leaves white inside holes such as mug handles)
+  model: isnet-general-use # Apache-2.0. Do not use rembg's default model: its weights are non-commercial.

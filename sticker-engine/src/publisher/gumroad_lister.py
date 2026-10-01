@@ -1,3 +1,3 @@
 def create_product(listing_data: dict, zip_path: str) -> str:
-    # AI Handoff: Creates product on Gumroad API
-    return "https://gumroad.com/stub"
+    """Create a Gumroad product and return its URL (Batch 3)."""
+    raise NotImplementedError("gumroad_lister.create_product is not built yet (Batch 3)")

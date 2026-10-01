@@ -1,5 +1,4 @@
 import os
-import textwrap
 
 base_dir = r"c:\Users\atomi\AntiGrav\Projects\Notion-Sticker Pipeline\sticker-engine"
 

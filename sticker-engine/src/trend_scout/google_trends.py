@@ -7,10 +7,8 @@ pytrends is unofficial and rate-limited — sleep aggressively, degrade graceful
 HANDOFF: use pytrends, sleep between calls, degrade on failure.
 """
 
-import os
 import time
 import logging
-from typing import Optional
 
 from src.trend_scout import NicheSignal
 
@@ -40,7 +38,7 @@ def scan() -> list[NicheSignal]:
     try:
         # Aggressive sleep here: pytrends hits an unofficial endpoint and
         # Google bans IPs that hammer it. 2s between requests is minimum safe.
-        pt = TrendReq(hl="en-US", tz=360, timeout=(10, 25), retries=2, backoff_factor=0.5)
+        pt = TrendReq(hl="en-US", tz=360, timeout=(10, 25))  # no retries=: breaks on urllib3 2.x
         return _fetch_signals(pt)
     except Exception as e:
         logger.warning(f"Google Trends scout failed: {e}")

@@ -18,9 +18,7 @@ node number can change. Do NOT hardcode it.
 """
 
 import os
-import logging
-import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 import httpx
