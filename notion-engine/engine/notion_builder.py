@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from typing import Any, Callable, Optional
 
@@ -209,6 +210,30 @@ def _view_kwargs(view: dict, db_id: str, ds_id: str, name_to_info: dict, skipped
     return kwargs
 
 
+_PROP_REF = re.compile(r'prop\(\s*"([^"]+)"\s*\)')
+
+
+def _formulas_in_dependency_order(databases: list) -> list:
+    """Formulas that reference other formulas in the same database go after them."""
+    ordered: list = []
+    for db in databases:
+        pending = [p for p in db.get("properties", []) if p.get("type") == "formula"]
+        formula_names = {p["name"] for p in pending}
+        done: set = set()
+        while pending:
+            ready = [
+                p for p in pending
+                if not ({r for r in _PROP_REF.findall(p.get("expression") or "")} & (formula_names - done - {p["name"]}))
+            ]
+            if not ready:  # cycle: let Notion report it
+                ready = pending[:1]
+            for p in ready:
+                ordered.append((db["name"], p))
+                done.add(p["name"])
+            pending = [p for p in pending if p not in ready]
+    return ordered
+
+
 # ── Build ─────────────────────────────────────────────────────────────────────
 
 def build_template(spec: dict, token: str, parent_page_id: str, client: Any = None) -> dict:
@@ -277,7 +302,7 @@ def build_template(spec: dict, token: str, parent_page_id: str, client: Any = No
         except Exception as e:
             skipped.append(f"Validation error on {db_name}.{prop_name}: {e}")
 
-    # Pass 3: relations, then formulas, then rollups (each depends on the previous)
+    # Pass 3: relations, then rollups, then formulas (each may depend on the previous)
     for db in databases:
         for p in db.get("properties", []):
             if p.get("type") != "relation":
@@ -289,10 +314,7 @@ def build_template(spec: dict, token: str, parent_page_id: str, client: Any = No
             update_prop(db["name"], p["name"], {
                 "relation": {"data_source_id": data_source_ids[target], "single_property": {}}
             })
-    for db in databases:
-        for p in db.get("properties", []):
-            if p.get("type") == "formula":
-                update_prop(db["name"], p["name"], {"formula": {"expression": p.get("expression")}})
+    # Rollups depend only on relations; formulas may reference relations, rollups and other formulas.
     for db in databases:
         for p in db.get("properties", []):
             if p.get("type") == "rollup":
@@ -301,6 +323,8 @@ def build_template(spec: dict, token: str, parent_page_id: str, client: Any = No
                     "rollup_property_name": p.get("rollup_property_name"),
                     "function": p.get("function"),
                 }})
+    for db_name, p in _formulas_in_dependency_order(databases):
+        update_prop(db_name, p["name"], {"formula": {"expression": p.get("expression")}})
 
     # Pass 4: views (map property names to IDs first)
     for db in databases:

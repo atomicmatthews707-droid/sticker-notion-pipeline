@@ -201,7 +201,7 @@ def test_databases_use_initial_data_source_and_relations_use_data_source_id():
     rel = next(k for k in c.of("ds.update") if "Tasks" in k["properties"])
     assert rel["properties"]["Tasks"]["relation"]["data_source_id"] == "ds3"
     order = [list(k["properties"])[0] for k in c.of("ds.update")]
-    assert order == ["Tasks", "Late", "Spent"]  # relation, formula, rollup
+    assert order == ["Tasks", "Spent", "Late"]  # relation, rollup, formula
 
 
 def test_views_map_property_ids_and_skip_missing():
@@ -298,3 +298,20 @@ def test_title_property_is_added_when_spec_has_none():
     c = FakeClient()
     build_template(spec, "tok", "parent", client=c)
     assert "Name" in c.of("databases.create")[0]["initial_data_source"]["properties"]
+
+
+def test_formulas_ordered_after_formulas_they_reference():
+    dbs = [{"name": "D", "properties": [
+        {"name": "C", "type": "formula", "expression": 'prop("B") + 1'},
+        {"name": "B", "type": "formula", "expression": 'prop("A") + 1'},
+        {"name": "A", "type": "number"},
+    ]}]
+    assert [p["name"] for _, p in nb._formulas_in_dependency_order(dbs)] == ["B", "C"]
+
+
+def test_formula_cycle_does_not_hang():
+    dbs = [{"name": "D", "properties": [
+        {"name": "X", "type": "formula", "expression": 'prop("Y")'},
+        {"name": "Y", "type": "formula", "expression": 'prop("X")'},
+    ]}]
+    assert len(nb._formulas_in_dependency_order(dbs)) == 2
