@@ -24,7 +24,10 @@ def create_sheet(image_paths: list[str], out_dir: Path) -> tuple[str, str]:
     sheet = Image.new("RGBA", (size, size), (255, 255, 255, 0))
     for i, sticker in enumerate(stickers):
         art = fit(sticker, cell - 2 * pad)
-        x = left + (i % cols) * cell + (cell - art.width) // 2
+        in_last_row = i // cols == rows - 1
+        row_count = len(stickers) - (rows - 1) * cols if in_last_row else cols
+        row_shift = (cols - row_count) * cell // 2      # centre an incomplete last row
+        x = left + row_shift + (i % cols) * cell + (cell - art.width) // 2
         y = top + (i // cols) * cell + (cell - art.height) // 2
         sheet.alpha_composite(art, (x, y))
 

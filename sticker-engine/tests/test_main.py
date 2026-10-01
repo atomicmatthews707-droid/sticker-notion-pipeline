@@ -360,3 +360,29 @@ def test_tick_in_loop_mode_does_not_start_a_second_runner(monkeypatch):
     monkeypatch.setattr(main, "_background_loop", lambda: None)  # the real loop would run forever
     with TestClient(main.app) as c:
         assert c.post("/tick").json() == {"status": "loop_running"}
+
+
+def test_qa_judges_the_cutout_not_the_raw_image(monkeypatch, tmp_path):
+    nid = new_niche()
+    make_images(nid, tmp_path, 3)
+    seen = []
+    monkeypatch.setattr("src.quality.bg_remover.remove_background", lambda p: shutil.copy(p, p.replace(".png", "_nobg.png")) and p.replace(".png", "_nobg.png"))
+    monkeypatch.setattr("src.quality.auto_filter.filter_batch", lambda imgs, niche: [seen.append(i["image_path"]) or db.update_image(i["id"], kept=True) for i in imgs])
+    monkeypatch.setattr(main.config, "int_setting", lambda e, p, d: 1)
+    main._stage_filter(nid, "cats")
+    assert len(seen) == 3 and all(p.endswith("_nobg.png") for p in seen)
+
+
+def test_failed_cutout_is_rejected_before_it_costs_a_qa_call(monkeypatch, tmp_path):
+    nid = new_niche()
+    make_images(nid, tmp_path, 2)
+
+    def broken(path):
+        raise RuntimeError("cutout failed")
+
+    qa_calls = []
+    monkeypatch.setattr("src.quality.bg_remover.remove_background", broken)
+    monkeypatch.setattr("src.quality.auto_filter.filter_batch", lambda imgs, niche: qa_calls.append(len(imgs)))
+    monkeypatch.setattr(main.config, "int_setting", lambda e, p, d: 0)
+    main._stage_filter(nid, "cats")
+    assert qa_calls == [] and len(db.get_images_for_niche(nid, kept=False)) == 2

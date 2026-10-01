@@ -126,17 +126,27 @@ def test_rembg_uses_the_pinned_open_licence_model_and_reuses_the_session(tmp_pat
     monkeypatch.setitem(sys.modules, "rembg", SimpleNamespace(new_session=new_session, remove=remove))
     monkeypatch.setattr(bg_remover, "_session", None)
     a, b = save(sticker_image(), tmp_path, "a.png"), save(sticker_image(), tmp_path, "b.png")
-    bg_remover.remove_background(a)
-    bg_remover.remove_background(b)
+    bg_remover.remove_background(a, method="rembg")
+    bg_remover.remove_background(b, method="rembg")
     assert calls == {"sessions": ["isnet-general-use"], "removes": 2}
 
 
-def test_transparent_copy_matches_its_white_background_original(tmp_path):
-    """After a crash mid-background-removal, a processed and an unprocessed copy must still dedupe."""
-    original = save(sticker_image(), tmp_path, "orig.png")
-    transparent = bg_remover.remove_background(original, method="floodfill")
-    assert dedupe([original, transparent]) == [original]
+def test_hash_ignores_colour_data_hidden_under_transparent_pixels(tmp_path):
+    """rembg-style cutouts keep black RGB under alpha 0; the hash must still see the sticker on white."""
+    import numpy as np
 
+    from src.quality.deduper import _hash
+
+    original = sticker_image()
+    path_a = save(original, tmp_path, "a.png")
+    arr = np.asarray(original.convert("RGBA")).copy()
+    outside = arr[:, :, :3].min(axis=2) >= 236
+    arr[outside] = (0, 0, 0, 0)                         # transparent, with black RGB underneath
+    path_b = str(tmp_path / "b.png")
+    Image.fromarray(arr).save(path_b)
+    naive = __import__("imagehash").phash(Image.open(path_b).convert("L"))
+    assert (_hash(path_a) - _hash(path_b)) <= 4          # same picture
+    assert (_hash(path_a) - naive) > 12                  # a naive hash would call them different
 
 def test_rembg_output_is_hardened_to_fully_opaque_but_keeps_soft_edges(tmp_path, monkeypatch):
     def remove(data, session=None):
@@ -152,3 +162,55 @@ def test_rembg_output_is_hardened_to_fully_opaque_but_keeps_soft_edges(tmp_path,
     out = bg_remover.remove_background(save(sticker_image(), tmp_path), method="rembg")
     alphas = [Image.open(out).getpixel((x, 0))[3] for x in range(4)]
     assert alphas == [0, 120, 255, 255]
+
+
+def ring_sticker(tmp_path):
+    """White-filled shape with a dark outline, like a cloud/ghost/blanket: its white fill is CONTENT."""
+    from PIL import ImageDraw
+
+    img = Image.new("RGB", (600, 600), "white")
+    d = ImageDraw.Draw(img)
+    d.ellipse([100, 100, 500, 500], fill="white", outline=(30, 30, 30), width=14)
+    d.ellipse([240, 260, 280, 300], fill=(30, 30, 30))   # an eye, so the fill is not featureless
+    return save(img, tmp_path, "ghost.png")
+
+
+def test_default_cutout_is_floodfill_and_never_hollows_out_white_fills(tmp_path):
+    src = ring_sticker(tmp_path)
+    out = bg_remover.remove_background(src)  # default method
+    img = Image.open(out)
+    assert img.getpixel((5, 5))[3] == 0            # outside is cleared
+    assert img.getpixel((350, 400))[3] == 255      # the white body INSIDE the outline stays solid
+
+
+def test_enclosed_gaps_such_as_mug_handles_stay_white_by_design(tmp_path):
+    from PIL import ImageDraw
+
+    img = Image.new("RGB", (600, 600), "white")
+    ImageDraw.Draw(img).ellipse([150, 150, 450, 450], fill=(210, 120, 60), outline=(30, 30, 30), width=14)
+    ImageDraw.Draw(img).ellipse([260, 260, 340, 340], fill="white", outline=(30, 30, 30), width=10)  # a hole
+    out = bg_remover.remove_background(save(img, tmp_path, "ring.png"))
+    assert Image.open(out).getpixel((300, 300))[3] == 255    # documented trade-off: kept, not punched out
+
+
+def test_light_fringe_next_to_the_outline_is_trimmed(tmp_path):
+    out = bg_remover.remove_background(save(sticker_image(), tmp_path))
+    img = Image.open(out)
+    # Walk in from the left along the sticker's centre row: alpha must rise through the outline without
+    # opaque light-grey pixels sitting outside it.
+    row = [img.getpixel((x, 300)) for x in range(0, 300)]
+    first_opaque = next(i for i, p in enumerate(row) if p[3] > 200)
+    assert sum(row[first_opaque][:3]) < 3 * 120        # the first solid pixel is the dark outline, not a pale halo
+
+
+def test_pale_details_that_are_not_pure_white_survive(tmp_path):
+    from PIL import ImageDraw
+
+    img = Image.new("RGB", (600, 600), "white")
+    ImageDraw.Draw(img).line([(100, 300), (500, 300)], fill=(240, 225, 205), width=20)   # pale steam-like stroke
+    out = bg_remover.remove_background(save(img, tmp_path, "steam.png"))
+    assert Image.open(out).getpixel((300, 300))[3] > 200
+
+
+def test_rembg_is_opt_in(monkeypatch):
+    assert bg_remover.config.get("bg_remover.method") == "floodfill"

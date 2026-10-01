@@ -81,7 +81,7 @@ def test_parse_score():
 
 def test_prompt_names_the_niche_and_rubric_is_strict():
     rubric = auto_filter._RUBRIC.read_text()
-    assert "garbled" in rubric and "trademark" in rubric and "plain white" in rubric
+    assert "garbled" in rubric and "trademark" in rubric and "see-through" in rubric and "grey background" in rubric
 
 
 def test_vision_client_falls_back_to_text_model_on_404():
@@ -94,3 +94,21 @@ def test_vision_client_falls_back_to_text_model_on_404():
     models = fake_client(c, errors.ClientError(404, {"error": {"message": "model not found"}}), genai_response(text='{"score": 8, "reason": "ok"}'))
     assert c.generate_vision_json("judge", b"\x89PNG", "image/png") == {"score": 8, "reason": "ok"}
     assert c.vision_fallback_used and [m["model"] for m in models.calls] == [c.vision_model, c.text_model]
+
+
+def test_reviewer_sees_the_cutout_on_grey_so_damage_is_visible(tmp_path):
+    from PIL import Image
+
+    from src.quality.auto_filter import VIEW_GREY, render_for_review
+
+    rgba = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+    rgba.putpixel((32, 32), (255, 0, 0, 255))
+    rgba.putpixel((10, 10), (255, 255, 255, 40))        # a faint haze pixel
+    path = tmp_path / "c.png"
+    rgba.save(path)
+    import io
+
+    seen = Image.open(io.BytesIO(render_for_review(str(path)))).convert("RGB")
+    assert seen.getpixel((0, 0)) == VIEW_GREY             # transparency becomes grey, not white
+    assert seen.getpixel((32, 32)) == (255, 0, 0)
+    assert seen.getpixel((10, 10)) != VIEW_GREY           # haze shows up against the grey

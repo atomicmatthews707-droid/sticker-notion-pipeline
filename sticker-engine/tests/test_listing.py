@@ -93,3 +93,15 @@ def test_gumroad_never_pretends():
     assert gumroad_lister.is_enabled() is False
     with pytest.raises(PublishUnavailable):
         gumroad_lister.create_product({}, "z")
+
+
+def test_listing_prompt_carries_only_verifiable_facts(tmp_path):
+    from tests.helpers import save_stickers
+
+    paths = save_stickers(tmp_path, 5)
+    llm = FakeLLM(GOOD)
+    listing_writer.write_listing("autumn", paths, sample_subjects=["mug", "candle"], client=llm)
+    prompt = llm.prompts[0]
+    assert "1024x1024 pixels" in prompt and "not the full list" in prompt and "pack has 5" in prompt
+    rules = listing_writer._PROMPT.read_text()
+    assert "DPI" in rules and "print-ready" in rules and "a few of the stickers" in rules

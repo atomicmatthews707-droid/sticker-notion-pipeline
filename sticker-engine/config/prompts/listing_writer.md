@@ -17,3 +17,6 @@ Rules:
   "These stickers were designed with the help of AI image tools and hand-selected for this pack."
 - Do not mention any brand, character, celebrity or trademark. Do not promise sales or make medical claims.
 - Do not invent a sticker count; use the number given.
+- State only the facts you were given. Do NOT mention DPI, print resolution, "print-ready", file sizes, or any
+  dimension other than the pixel size provided. The sticker sheet is a digital PNG, not a print product.
+- The sample subjects are only a few of the stickers. Introduce them as "a few of the stickers", never as the full list.

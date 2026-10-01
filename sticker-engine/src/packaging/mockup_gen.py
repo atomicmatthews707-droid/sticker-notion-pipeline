@@ -56,8 +56,14 @@ def create_mockups(sheet_path: str, image_paths: list[str], niche: str, out_dir:
     # 1. Hero: the sheet on a card
     hero = Image.new("RGBA", (SIZE, SIZE), bg + (255,))
     sheet = Image.open(sheet_path).convert("RGBA")
+    bbox = sheet.getchannel("A").getbbox()
+    if bbox:  # use the card's space for stickers, not for the sheet's empty margin
+        pad = 60
+        sheet = sheet.crop((max(0, bbox[0] - pad), max(0, bbox[1] - pad), min(sheet.width, bbox[2] + pad), min(sheet.height, bbox[3] + pad)))
+    fitted = fit(sheet, 1440)
+    fitted = fitted.resize((round(sheet.width * 1440 / max(sheet.size)), round(sheet.height * 1440 / max(sheet.size))), Image.LANCZOS)
     card = Image.new("RGBA", (1500, 1500), (255, 255, 255, 255))
-    card.alpha_composite(sheet.resize((1440, 1440), Image.LANCZOS), (30, 30))
+    card.alpha_composite(fitted, ((1500 - fitted.width) // 2, (1500 - fitted.height) // 2))
     _shadowed(hero, _rounded(card, 48), ((SIZE - 1500) // 2, 330))
     _headline(hero, niche, subtitle)
     paths.append(str(out_dir / "mockup_1_hero.jpg"))

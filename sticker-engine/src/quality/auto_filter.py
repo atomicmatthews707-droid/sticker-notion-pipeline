@@ -1,8 +1,10 @@
 """Autonomous quality gate: a vision model scores every generated sticker against the QA rubric."""
 
+import io
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
 from typing import Optional
+
+from PIL import Image
 
 from src.shared import config
 from src.shared.gemini_client import BudgetExceeded, GeminiClient, GeminiError
@@ -11,6 +13,19 @@ from src.storage import db
 
 logger = get_logger(__name__)
 _RUBRIC = config.ROOT / "config" / "prompts" / "qa_rubric.md"
+
+
+VIEW_GREY = (118, 124, 136)  # neutral backdrop: exposes haze, fringes and see-through areas that white hides
+
+
+def render_for_review(path: str) -> bytes:
+    """The sticker as the reviewer sees it: cut out and placed on grey, so cutout damage is visible."""
+    img = Image.open(path).convert("RGBA")
+    backdrop = Image.new("RGBA", img.size, VIEW_GREY + (255,))
+    backdrop.alpha_composite(img)
+    out = io.BytesIO()
+    backdrop.convert("RGB").save(out, "PNG")
+    return out.getvalue()
 
 
 def _parse_score(data) -> tuple[float, str]:
@@ -39,7 +54,7 @@ def filter_batch(images: list[dict], niche: str, client: Optional[GeminiClient] 
 
     def judge(img: dict) -> None:
         data = client.generate_vision_json(
-            f"Niche: {niche}\nScore this sticker.", Path(img["image_path"]).read_bytes(), "image/png", system=system
+            f"Niche: {niche}\nScore this sticker.", render_for_review(img["image_path"]), "image/png", system=system
         )
         score, reason = _parse_score(data)
         threshold = min_score + (float(config.get("qa.fallback_score_bonus", 1)) if client.vision_fallback_used else 0)

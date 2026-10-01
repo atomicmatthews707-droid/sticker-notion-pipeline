@@ -54,14 +54,27 @@ def validate(data) -> list[str]:
     return errors
 
 
+def _pixel_size(image_paths: list[str]) -> str:
+    try:
+        from PIL import Image
+
+        with Image.open(image_paths[0]) as im:
+            return f"{im.width}x{im.height}"
+    except Exception:
+        return "square"
+
+
 def write_listing(niche: str, image_paths: list[str], sample_subjects: Optional[list[str]] = None,
                   client: Optional[GeminiClient] = None, max_attempts: int = 3) -> dict:
     """Generate and validate listing copy. The AI-disclosure line is enforced in code, not trusted to the model."""
     client = client or GeminiClient()
     count = len(image_paths)
     system = Path(_PROMPT).read_text(encoding="utf-8")
+    size = _pixel_size(image_paths)
     prompt = (f"Niche: {niche}\nNumber of stickers in the pack: {count}\n"
-              f"Sample sticker subjects: {', '.join((sample_subjects or [])[:8]) or 'n/a'}")
+              f"Each sticker PNG is {size} pixels with a transparent background.\n"
+              f"A few sample sticker subjects (the pack has {count}, this is not the full list): "
+              f"{', '.join((sample_subjects or [])[:8]) or 'n/a'}")
 
     feedback, errors = "", ["no attempt made"]
     for _ in range(max_attempts):

@@ -100,3 +100,24 @@ def test_oversize_pack_warns(tmp_path, small_sheet, monkeypatch, caplog):
     with caplog.at_level("WARNING"):
         bundler.bundle("x", paths, sheet, mocks, out)
     assert "over the" in caplog.text
+
+
+def test_incomplete_last_row_is_centred(tmp_path, small_sheet):
+    paths = save_stickers(tmp_path, 5)                # 3 columns: rows of 3 and 2
+    sheet, _ = sheet_layout.create_sheet(paths, tmp_path)
+    alpha = Image.open(sheet).getchannel("A")
+    cols, rows = grid_shape(5)
+    cell = 1200 // max(cols, rows)
+    top = (1200 - cell * rows) // 2
+    bottom_row = alpha.crop((0, top + cell, 1200, top + 2 * cell)).getbbox()
+    left_gap, right_gap = bottom_row[0], 1200 - bottom_row[2]
+    assert abs(left_gap - right_gap) <= cell * 0.15   # balanced, not pushed to the left
+
+
+def test_hero_uses_the_stickers_not_the_sheets_empty_margin(tmp_path, small_sheet):
+    paths = save_stickers(tmp_path, 2)
+    sheet, _ = sheet_layout.create_sheet(paths, tmp_path)
+    hero = mockup_gen.create_mockups(sheet, paths, "x", tmp_path)[0]
+    card_area = Image.open(hero).convert("RGB").crop((250, 330, 1750, 1830))
+    non_white = sum(1 for p in card_area.resize((150, 150)).getdata() if sum(p) < 720)
+    assert non_white > 150 * 150 * 0.08               # stickers fill a meaningful share of the card

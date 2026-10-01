@@ -92,23 +92,15 @@ def _stage_generate(niche_id: int, niche_name: str) -> None:
 
 
 def _stage_filter(niche_id: int, niche_name: str) -> None:
-    """FILTERING: vision QA -> dedupe -> background removal. Each step only touches what it must."""
+    """
+    FILTERING: cut out the background -> vision QA on the cutout -> dedupe.
+    The cutout comes first so QA judges the finished sticker, including any damage the cutout caused.
+    """
     from src.quality.auto_filter import filter_batch
     from src.quality.bg_remover import remove_background
     from src.quality.deduper import dedupe
 
-    pending = db.get_pending_images(niche_id)
-    if pending:
-        filter_batch(pending, niche_name)  # writes qa_score / qa_reason / kept itself
-
-    kept = db.get_images_for_niche(niche_id, kept=True)
-    unique = dedupe(kept)
-    unique_ids = {i["id"] for i in unique}
-    for img in kept:
-        if img["id"] not in unique_ids:
-            db.update_image(img["id"], kept=False, qa_reason="duplicate")
-
-    for img in unique:
+    for img in db.get_pending_images(niche_id):
         try:
             out = remove_background(img["image_path"])
         except Exception as e:
@@ -117,6 +109,16 @@ def _stage_filter(niche_id: int, niche_name: str) -> None:
             continue
         if out != img["image_path"]:
             db.update_image(img["id"], image_path=out)
+
+    pending = db.get_pending_images(niche_id)
+    if pending:
+        filter_batch(pending, niche_name)  # writes qa_score / qa_reason / kept itself
+
+    kept = db.get_images_for_niche(niche_id, kept=True)
+    unique_ids = {i["id"] for i in dedupe(kept)}
+    for img in kept:
+        if img["id"] not in unique_ids:
+            db.update_image(img["id"], kept=False, qa_reason="duplicate")
 
     final = len(db.get_images_for_niche(niche_id, kept=True))
     minimum = config.int_setting("MIN_PACK_IMAGES", "packaging.min_images", 10)
