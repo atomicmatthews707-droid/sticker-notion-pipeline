@@ -16,8 +16,11 @@ def _on_white(img: Image.Image) -> Image.Image:
     return img.convert("RGB")
 
 
-def check(image_path: str) -> tuple[bool, str]:
-    """Fast local checks, no API calls: size, aspect, blank image, plain white background."""
+def check(image_path: str, strict: bool = True) -> tuple[bool, str]:
+    """
+    Fast local checks, no API calls: size, aspect, blank image. strict (sticker styles) also demands a plain white
+    background around the subject; styles that fill the whole frame (photographs) use strict=False.
+    """
     try:
         with Image.open(image_path) as img:
             img.load()
@@ -34,6 +37,8 @@ def check(image_path: str) -> tuple[bool, str]:
     grey = np.asarray(small.convert("L"), dtype=np.uint8)
     if float(np.std(grey)) <= 5:
         return False, "Blank image"
+    if not strict:
+        return True, "ok"
     frame = max(2, int(min(grey.shape) * 0.03))
     border = np.concatenate([grey[:frame].ravel(), grey[-frame:].ravel(), grey[:, :frame].ravel(), grey[:, -frame:].ravel()])
     if float(np.mean(border >= WHITE_LEVEL)) < BORDER_WHITE_RATIO:

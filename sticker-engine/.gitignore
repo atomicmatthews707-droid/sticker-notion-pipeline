@@ -10,3 +10,5 @@ data/
 *.zip
 /assets/mockups/*
 !/assets/mockups/.gitkeep
+ui_settings.json
+*.tmp

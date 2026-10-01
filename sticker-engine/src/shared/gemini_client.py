@@ -128,19 +128,23 @@ class GeminiClient:
 
     # ── image ──────────────────────────────────────────────────────────────────
 
-    def generate_image(self, prompt: str) -> ImageResult:
-        """Generate one image. Raises ImageBlocked when the model returns no image part."""
+    def generate_image(self, prompt: str, references: Optional[list] = None, seed: Optional[int] = None,
+                       aspect_ratio: str = "1:1") -> ImageResult:
+        """
+        Generate one image. references are (bytes, mime) pairs sent along with the prompt; seed makes a run
+        repeatable and lets several variations of one prompt differ. Raises ImageBlocked when no image comes back.
+        """
         from google.genai import types
 
         self._check_budget()
         config_ = types.GenerateContentConfig(
             response_modalities=["IMAGE"],
-            image_config=types.ImageConfig(aspect_ratio="1:1"),
+            image_config=types.ImageConfig(aspect_ratio=aspect_ratio),
+            seed=seed,
         )
+        contents = [types.Part.from_bytes(data=data, mime_type=mime) for data, mime in (references or [])] + [prompt]
         response = self._call(
-            lambda: self.client.models.generate_content(
-                model=self.image_model, contents=[prompt], config=config_
-            )
+            lambda: self.client.models.generate_content(model=self.image_model, contents=contents, config=config_)
         )
         parts = (response.candidates[0].content.parts or []) if response.candidates and response.candidates[0].content else []
         for part in parts:

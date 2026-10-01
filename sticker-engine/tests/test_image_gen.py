@@ -15,8 +15,9 @@ class FakeImageClient:
     def __init__(self):
         self.calls = []
 
-    def generate_image(self, prompt):
+    def generate_image(self, prompt, references=None, seed=None, aspect_ratio="1:1"):
         self.calls.append(prompt)
+        self.last_kwargs = {"references": references, "seed": seed}
         if "blocked" in prompt:
             raise ImageBlocked("safety")
         if "budget" in prompt:
@@ -83,7 +84,7 @@ def test_budget_hit_saves_progress_then_raises_for_resume():
     assert len(db.get_pending_images(1)) == 1  # the finished image is kept
     # Later (budget reset) the same call finishes only what is missing.
     c2 = FakeImageClient()
-    c2.generate_image = lambda p: (c2.calls.append(p), ImageResult(jpeg_bytes(), "image/jpeg"))[1]
+    c2.generate_image = lambda p, **kw: (c2.calls.append(p), ImageResult(jpeg_bytes(), "image/jpeg"))[1]
     image_gen.generate_images(["cat", "budget one"], 1, client=c2, max_workers=1)
     assert c2.calls == ["budget one"]
 

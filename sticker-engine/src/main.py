@@ -33,6 +33,8 @@ from pydantic import BaseModel
 
 from src.shared import config
 from src.publisher import PublishUnavailable
+from src.shared import cancel
+from src.shared.design import rules_for
 from src.shared.gemini_client import BudgetExceeded
 from src.shared.logger import get_logger
 from src.storage import db
@@ -68,7 +70,8 @@ def _load_or_build_prompts(niche_id: int, niche_name: str) -> list[str]:
     prompts = build_prompts(
         niche_name, brief=niche.get("brief") or "", style=niche.get("style") or "",
         count=niche.get("target_count"), subjects=niche.get("subjects"), niche_id=niche_id,
-        pack_md=niche.get("pack_md") or "",
+        pack_md=niche.get("pack_md") or "", verbatim=_options(niche_id)["verbatim"],
+        apply_style=_options(niche_id)["apply_style"], style_md=_options(niche_id)["style_md"],
     )
     if not prompts:
         raise RuntimeError("prompt_builder returned no prompts")
@@ -77,17 +80,31 @@ def _load_or_build_prompts(niche_id: int, niche_name: str) -> list[str]:
     return prompts
 
 
+def _options(niche_id: int) -> dict:
+    """Per-pack run options (variations, references, quality check, review-only), with safe defaults."""
+    o = (db.get_niche(niche_id) or {}).get("options") or {}
+    return {
+        "variants": max(1, int(o.get("variants", 1))), "references": o.get("references") or [],
+        "reference_mode": o.get("reference_mode", "style"), "apply_style": bool(o.get("apply_style", True)),
+        "verbatim": bool(o.get("verbatim", False)), "qa": bool(o.get("qa", True)), "build_pack": bool(o.get("build_pack", True)),
+        "style_md": o.get("style_md"),
+    }
+
+
 def _stage_generate(niche_id: int, niche_name: str) -> None:
     """GENERATING: prompts -> images on disk and in the DB -> local style checks."""
     from src.generator.image_gen import generate_images
     from src.generator.style_guard import check as style_check
 
     prompts = _load_or_build_prompts(niche_id, niche_name)
-    generate_images(prompts, niche_id)
+    opts = _options(niche_id)
+    rules = rules_for(opts["style_md"])
+    generate_images(prompts, niche_id, variants=opts["variants"], references=opts["references"],
+                    reference_mode=opts["reference_mode"], aspect_ratio=rules.aspect)
 
     pending = db.get_pending_images(niche_id)
     for img in pending:
-        ok, reason = style_check(img["image_path"])
+        ok, reason = style_check(img["image_path"], strict=rules.guard == "strict")
         if not ok:
             logger.info("Style guard rejected %s: %s", img["image_path"], reason)
             db.update_image(img["id"], kept=False, qa_reason=f"style: {reason}")
@@ -99,6 +116,8 @@ def _stage_generate(niche_id: int, niche_name: str) -> None:
 
 def _minimum_pack_size(niche_id: int) -> int:
     """Fewest kept stickers worth packaging. A small requested pack needs only most of what was asked for."""
+    if not _options(niche_id)["build_pack"]:
+        return 0  # a review-only run just shows you what it made
     configured = config.int_setting("MIN_PACK_IMAGES", "packaging.min_images", 10)
     requested = (db.get_niche(niche_id) or {}).get("target_count")
     return configured if not requested else min(configured, max(1, round(requested * 0.6)))
@@ -113,9 +132,10 @@ def _stage_filter(niche_id: int, niche_name: str) -> None:
     from src.quality.bg_remover import remove_background
     from src.quality.deduper import dedupe
 
-    for img in db.get_pending_images(niche_id):
+    rules = rules_for(_options(niche_id)["style_md"])
+    for img in db.get_pending_images(niche_id) if rules.cutout != "none" else []:
         try:
-            out = remove_background(img["image_path"])
+            out = remove_background(img["image_path"], method=rules.cutout)
         except Exception as e:
             logger.warning("Background removal failed for %s: %s", img["image_path"], e)
             db.update_image(img["id"], kept=False, qa_reason=f"background removal failed: {e}"[:200])
@@ -124,8 +144,12 @@ def _stage_filter(niche_id: int, niche_name: str) -> None:
             db.update_image(img["id"], image_path=out)
 
     pending = db.get_pending_images(niche_id)
-    if pending:
+    if pending and _options(niche_id)["qa"]:
         filter_batch(pending, niche_name)  # writes qa_score / qa_reason / kept itself
+    elif pending:
+        for img in pending:
+            db.update_image(img["id"], kept=True, qa_reason="AI quality check skipped")
+        logger.info("AI quality check skipped: %d images kept for you to review", len(pending))
 
     kept = db.get_images_for_niche(niche_id, kept=True)
     unique_ids = {i["id"] for i in dedupe(kept)}
@@ -229,7 +253,10 @@ def _run_pipeline_for_niche(niche_id: int, niche_name: str, start_status: Option
     ]
     first = STAGE_ORDER.index(start_status) if start_status in STAGE_ORDER else 0
 
-    outcome = _run_stages(niche_id, niche_name, stages[first:])
+    build_pack = _options(niche_id)["build_pack"]
+    if not build_pack:
+        stages = [s for s in stages if s[0] in ("GENERATING", "FILTERING")]
+    outcome = _run_stages(niche_id, niche_name, stages[first:], final_status="PUBLISHED" if build_pack else "REVIEW")
     _refresh_review(niche_id)
     return outcome
 
@@ -244,14 +271,19 @@ def _refresh_review(niche_id: int) -> None:
         logger.warning("Could not write the review page for niche %s: %s", niche_id, e)
 
 
-def _run_stages(niche_id: int, niche_name: str, stages: list) -> str:
+def _run_stages(niche_id: int, niche_name: str, stages: list, final_status: str = "PUBLISHED") -> str:
     for status, fn in stages:
         try:
             db.update_niche_status(niche_id, status)
+            logger.info("Step started: %s", status)
+            cancel.check()
             fn(niche_id, niche_name)
         except BudgetExceeded as e:
             logger.warning("Niche %r paused at %s: %s", niche_name, status, e)
             return "paused"
+        except cancel.Cancelled as e:
+            logger.warning("Stopped at %s: %s", status, e)
+            return "cancelled"
         except AwaitingPublish as e:
             db.update_niche_status(niche_id, "READY", error_msg=str(e))
             logger.info("Niche %r READY: %s", niche_name, e)
@@ -266,9 +298,9 @@ def _run_stages(niche_id: int, niche_name: str, stages: list) -> str:
             logger.error("Niche %r FAILED at %s: %s", niche_name, status, e)
             return "failed"
 
-    db.update_niche_status(niche_id, "PUBLISHED")
-    logger.info("Niche %r PUBLISHED", niche_name)
-    return "published"
+    db.update_niche_status(niche_id, final_status)
+    logger.info("Niche %r %s", niche_name, final_status)
+    return "published" if final_status == "PUBLISHED" else "review"
 
 
 # ── Prices, trends, budget ──────────────────────────────────────────────────────

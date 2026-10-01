@@ -21,6 +21,7 @@ class Status(Enum):
     FILTERING = "FILTERING"
     PACKAGING = "PACKAGING"
     LISTING = "LISTING"
+    REVIEW = "REVIEW"  # generated and filtered, not packaged: waiting for you to look at the stickers
     READY = "READY"  # packaged and listing copy written; waiting for a marketplace to publish
     PUBLISHED = "PUBLISHED"
     FAILED = "FAILED"
@@ -62,12 +63,11 @@ _SCHEMA = [
     """CREATE TABLE IF NOT EXISTS niches (
         id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, status TEXT, score REAL, source TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        error_msg TEXT, brief TEXT, style TEXT, target_count INTEGER, subjects TEXT, pack_md TEXT)""",
+        error_msg TEXT, brief TEXT, style TEXT, target_count INTEGER, subjects TEXT, pack_md TEXT, options TEXT)""",
     """CREATE TABLE IF NOT EXISTS images (
         id INTEGER PRIMARY KEY AUTOINCREMENT, niche_id INTEGER, prompt TEXT, image_path TEXT,
-        qa_score REAL, qa_reason TEXT, kept BOOLEAN,
+        qa_score REAL, qa_reason TEXT, kept BOOLEAN, variant INTEGER DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_images_niche_prompt ON images(niche_id, prompt)",
     """CREATE TABLE IF NOT EXISTS packs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, niche_id INTEGER, zip_path TEXT, etsy_url TEXT,
         gumroad_url TEXT, spend_usd REAL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
@@ -78,7 +78,7 @@ _SCHEMA = [
 ]
 
 
-_NICHE_REQUEST_COLUMNS = {"brief": "TEXT", "style": "TEXT", "target_count": "INTEGER", "subjects": "TEXT", "pack_md": "TEXT"}
+_NICHE_REQUEST_COLUMNS = {"brief": "TEXT", "style": "TEXT", "target_count": "INTEGER", "subjects": "TEXT", "pack_md": "TEXT", "options": "TEXT"}
 
 
 def init_db_sync() -> None:
@@ -91,6 +91,12 @@ def init_db_sync() -> None:
         for column, kind in _NICHE_REQUEST_COLUMNS.items():
             if column not in have:
                 conn.execute(f"ALTER TABLE niches ADD COLUMN {column} {kind}")
+        have_img = {r["name"] for r in conn.execute("PRAGMA table_info(images)")}
+        if "variant" not in have_img:
+            conn.execute("ALTER TABLE images ADD COLUMN variant INTEGER DEFAULT 0")
+        # One row per (pack, prompt, variation). Older databases had a narrower index.
+        conn.execute("DROP INDEX IF EXISTS idx_images_niche_prompt")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_images_niche_prompt_variant ON images(niche_id, prompt, variant)")
         conn.commit()
     finally:
         conn.close()
@@ -145,7 +151,7 @@ REQUEST_PRIORITY = 1000.0  # requested packs jump ahead of anything the scouts q
 
 
 def queue_request(name: str, brief: str = "", style: str = "", count: Optional[int] = None,
-                  subjects: Optional[list] = None, pack_md: str = "") -> int:
+                  subjects: Optional[list] = None, pack_md: str = "", options: Optional[dict] = None) -> int:
     """
     Queue a pack the user asked for, ahead of scouted niches. brief: free text about what is wanted;
     style: replaces the default art style for this pack; count: number of stickers; subjects: an exact list,
@@ -163,9 +169,10 @@ def queue_request(name: str, brief: str = "", style: str = "", count: Optional[i
         if busy:
             raise ValueError(f"A pack called {name!r} is already queued or in progress.")
         cur = conn.execute(
-            "INSERT INTO niches (name, status, score, source, updated_at, brief, style, target_count, subjects, pack_md) "
-            "VALUES (?, 'QUEUED', ?, 'request', ?, ?, ?, ?, ?, ?)",
-            (name, REQUEST_PRIORITY, _now(), brief.strip(), style.strip(), count, json.dumps(subjects) if subjects else None, pack_md),
+            "INSERT INTO niches (name, status, score, source, updated_at, brief, style, target_count, subjects, pack_md, options) "
+            "VALUES (?, 'QUEUED', ?, 'request', ?, ?, ?, ?, ?, ?, ?)",
+            (name, REQUEST_PRIORITY, _now(), brief.strip(), style.strip(), count, json.dumps(subjects) if subjects else None,
+             pack_md, json.dumps(options) if options else None),
         )
         conn.commit()
         return cur.lastrowid
@@ -181,7 +188,22 @@ def get_niche(niche_id: int) -> Optional[dict]:
             return None
         niche = dict(row)
         niche["subjects"] = json.loads(niche["subjects"]) if niche.get("subjects") else None
+        niche["options"] = json.loads(niche["options"]) if niche.get("options") else {}
         return niche
+    finally:
+        conn.close()
+
+
+def update_niche_options(niche_id: int, **changes) -> None:
+    """Merge changes into a pack's saved run options."""
+    niche = get_niche(niche_id)
+    if not niche:
+        raise ValueError(f"No pack {niche_id}")
+    merged = {**niche["options"], **changes}
+    conn = _conn()
+    try:
+        conn.execute("UPDATE niches SET options = ? WHERE id = ?", (json.dumps(merged), niche_id))
+        conn.commit()
     finally:
         conn.close()
 
@@ -244,19 +266,20 @@ def save_image_record(
     kept: Optional[bool] = None,
     qa_score: Optional[float] = None,
     qa_reason: str = "",
+    variant: int = 0,
 ) -> int:
-    """Insert an image (or update the existing row for the same niche + prompt). Returns its id."""
+    """Insert an image (or update the existing row for the same pack, prompt and variation). Returns its id."""
     conn = _conn()
     try:
         conn.execute(
-            """INSERT INTO images (niche_id, prompt, image_path, qa_score, qa_reason, kept) VALUES (?,?,?,?,?,?)
-               ON CONFLICT(niche_id, prompt) DO UPDATE SET image_path = excluded.image_path,
+            """INSERT INTO images (niche_id, prompt, image_path, qa_score, qa_reason, kept, variant) VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(niche_id, prompt, variant) DO UPDATE SET image_path = excluded.image_path,
                qa_score = excluded.qa_score, qa_reason = excluded.qa_reason, kept = excluded.kept""",
-            (niche_id, prompt, image_path, qa_score, qa_reason, None if kept is None else int(kept)),
+            (niche_id, prompt, image_path, qa_score, qa_reason, None if kept is None else int(kept), variant),
         )
         conn.commit()
         return conn.execute(
-            "SELECT id FROM images WHERE niche_id = ? AND prompt = ?", (niche_id, prompt)
+            "SELECT id FROM images WHERE niche_id = ? AND prompt = ? AND variant = ?", (niche_id, prompt, variant)
         ).fetchone()[0]
     finally:
         conn.close()

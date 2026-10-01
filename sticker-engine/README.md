@@ -45,6 +45,27 @@ Measured on a 5-sticker run: about $0.42 for 5 generated stickers ($0.335 images
 text). The vision QA costs about $0.016 per image, more than the handoff estimated, because the model spends tokens
 thinking. Extrapolated to 40 stickers per pack: roughly $3.40 before rejects.
 
+## Sticker Studio (run it on your own computer)
+
+A local screen for making and reviewing stickers. It uses only your own Gemini key (to draw images and, if you leave
+it on, to score them) and never touches Claude.
+
+1. Install Python 3.11+ from python.org. On the repo page choose Code > Download ZIP and unzip it (or `git clone`).
+2. Open the `sticker-engine` folder and double-click `run_ui.bat` (Windows) or run `./run_ui.sh` (Mac/Linux). The first
+   run installs what it needs; later runs start at once. Your browser opens at http://127.0.0.1:8081.
+3. Click the gear icon, paste your Gemini API key, Save, then restart the launcher once.
+
+**Global style.** The first card holds the look for the whole run; the subjects box holds only what to make
+("autumn cozy vibes", "office humor phrases"). Final prompt = subject + style. Pick a preset, edit the text, or use
+"Save as new" to keep your own. Presets are plain files in `styles/`: `clipart-kawaii.md` (default), `photoreal-comedy.md`,
+`bumper-signs.md`. These three are examples; copy `styles/_TEMPLATE.md` to invent any other look. Header lines switch
+the pipeline per style: `cutout: floodfill|rembg|none`, `background: white|none`, `qa: sticker|image`,
+`guard: strict|basic`, `aspect: 1:1|3:4|4:3|9:16|16:9`. Die-cut sticker styles use white background plus cutout;
+full-frame styles (photos, signs) set them to `none`.
+
+Every image you ask for (subjects x variations) is made and shown; nothing is hidden. Right-click any picture to open it
+in another program (add your own in Settings).
+
 ## Ask for a pack (and change how it looks)
 
 Everything is plain markdown, so you can edit it like a document.

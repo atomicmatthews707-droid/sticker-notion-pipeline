@@ -145,7 +145,7 @@ def test_generate_stage_saves_prompts_once_and_style_rejects(monkeypatch, tmp_pa
     bad = tmp_path / "bad.png"
     sticker_image(bg=(100, 200, 255)).save(bad)
 
-    def fake_generate(prompts, niche_id):
+    def fake_generate(prompts, niche_id, **kw):
         db.save_image_record(niche_id, "p0", str(good))
         db.save_image_record(niche_id, "p1", str(bad))
         return []
@@ -163,7 +163,7 @@ def test_generate_stage_fails_when_style_guard_rejects_everything(monkeypatch, t
     bad = tmp_path / "bad.png"
     sticker_image(bg=(100, 200, 255)).save(bad)
     monkeypatch.setattr("src.generator.prompt_builder.build_prompts", lambda niche, **kw: ["p"])
-    monkeypatch.setattr("src.generator.image_gen.generate_images", lambda p, i: db.save_image_record(i, "p", str(bad)))
+    monkeypatch.setattr("src.generator.image_gen.generate_images", lambda p, i, **kw: db.save_image_record(i, "p", str(bad)))
     with pytest.raises(RuntimeError, match="rejected every"):
         main._stage_generate(nid, "cats")
 
@@ -176,7 +176,7 @@ def test_filter_stage_dedupes_removes_backgrounds_and_enforces_minimum(monkeypat
     dup_id = db.save_image_record(nid, "dup", str(dup))
     monkeypatch.setattr("src.quality.auto_filter.filter_batch", lambda imgs, niche: [db.update_image(i["id"], kept=True, qa_score=8) for i in imgs])
 
-    def fake_remove(path):
+    def fake_remove(path, method=None):
         if "_nobg" in path:
             return path
         if path.endswith(f"{nid}_3.png"):
@@ -203,7 +203,7 @@ def test_filter_stage_raises_when_too_few_survive(monkeypatch, tmp_path):
     nid = new_niche()
     make_images(nid, tmp_path, 3)
     monkeypatch.setattr("src.quality.auto_filter.filter_batch", lambda imgs, niche: [db.update_image(i["id"], kept=True) for i in imgs])
-    monkeypatch.setattr("src.quality.bg_remover.remove_background", lambda p: p.replace(".png", "_nobg.png"))
+    monkeypatch.setattr("src.quality.bg_remover.remove_background", lambda p, method=None: p.replace(".png", "_nobg.png"))
     with pytest.raises(RuntimeError, match="Too few"):
         main._stage_filter(nid, "cats")
 
@@ -366,7 +366,7 @@ def test_qa_judges_the_cutout_not_the_raw_image(monkeypatch, tmp_path):
     nid = new_niche()
     make_images(nid, tmp_path, 3)
     seen = []
-    monkeypatch.setattr("src.quality.bg_remover.remove_background", lambda p: shutil.copy(p, p.replace(".png", "_nobg.png")) and p.replace(".png", "_nobg.png"))
+    monkeypatch.setattr("src.quality.bg_remover.remove_background", lambda p, method=None: shutil.copy(p, p.replace(".png", "_nobg.png")) and p.replace(".png", "_nobg.png"))
     monkeypatch.setattr("src.quality.auto_filter.filter_batch", lambda imgs, niche: [seen.append(i["image_path"]) or db.update_image(i["id"], kept=True) for i in imgs])
     monkeypatch.setattr(main.config, "int_setting", lambda e, p, d: 1)
     main._stage_filter(nid, "cats")
@@ -377,7 +377,7 @@ def test_failed_cutout_is_rejected_before_it_costs_a_qa_call(monkeypatch, tmp_pa
     nid = new_niche()
     make_images(nid, tmp_path, 2)
 
-    def broken(path):
+    def broken(path, method=None):
         raise RuntimeError("cutout failed")
 
     qa_calls = []
