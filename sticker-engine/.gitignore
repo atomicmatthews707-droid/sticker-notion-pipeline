@@ -12,3 +12,4 @@ data/
 !/assets/mockups/.gitkeep
 ui_settings.json
 *.tmp
+.venv/
