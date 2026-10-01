@@ -21,8 +21,10 @@ Score 3 or lower if ANY of these is present:
 - watermark, signature or border frame
 - photographic or 3D rendering instead of flat vector illustration
 
-Deduct 1 point for a light halo or fringe along the edge, or for a flat white patch inside a loop that should be
-see-through (for example inside a mug handle).
+Deduct 1 point for a light halo or fringe along the OUTER edge of the sticker.
+
+Do NOT deduct for a flat white patch inside a loop (for example inside a mug handle or a small vine curl). The
+cutout leaves such patches on purpose, and they are invisible on the white pages customers normally use.
 
 Return ONLY JSON, no commentary:
 {"score": <integer 0-10>, "reason": "<one or two sentences naming the main strength or flaw>"}

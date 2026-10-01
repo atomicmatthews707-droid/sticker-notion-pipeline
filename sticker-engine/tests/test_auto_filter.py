@@ -112,3 +112,10 @@ def test_reviewer_sees_the_cutout_on_grey_so_damage_is_visible(tmp_path):
     assert seen.getpixel((0, 0)) == VIEW_GREY             # transparency becomes grey, not white
     assert seen.getpixel((32, 32)) == (255, 0, 0)
     assert seen.getpixel((10, 10)) != VIEW_GREY           # haze shows up against the grey
+
+
+def test_rubric_does_not_reject_stickers_for_white_inside_loops():
+    """A live run rejected a clean mug and pumpkin for this; the cutout leaves such patches by design."""
+    rubric = auto_filter._RUBRIC.read_text()
+    assert "Do NOT deduct for a flat white patch inside a loop" in rubric
+    assert "Deduct 1 point for a light halo" in rubric

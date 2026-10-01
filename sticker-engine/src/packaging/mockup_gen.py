@@ -44,6 +44,42 @@ def _headline(canvas: Image.Image, title: str, subtitle: str) -> None:
     d.text((SIZE // 2, SIZE - 120), subtitle, font=font(60), fill=(70, 66, 96, 255), anchor="mm")
 
 
+def _greedy_place(sizes, width, height, top, rng, margin, tries, step):
+    placed: list[tuple[int, int, int, int]] = []
+
+    def free(x: int, y: int, w: int, h: int) -> bool:
+        box = (x - margin, y - margin, x + w + margin, y + h + margin)
+        return all(box[2] <= b[0] or box[0] >= b[2] or box[3] <= b[1] or box[1] >= b[3] for b in placed)
+
+    out: list = []
+    for w, h in sizes:
+        xs, ys = range(margin, max(margin, width - w - margin) + 1), range(top, max(top, height - h - margin) + 1)
+        candidates = [(rng.choice(xs), rng.choice(ys)) for _ in range(tries)]
+        candidates += [(x, y) for y in ys[::step] for x in xs[::step]]
+        spot = next(((x, y) for x, y in candidates if free(x, y, w, h)), None)
+        if spot:
+            placed.append((spot[0] - margin, spot[1] - margin, spot[0] + w + margin, spot[1] + h + margin))
+        out.append(spot)
+    return out
+
+
+def place_without_overlap(sizes: list[tuple[int, int]], width: int, height: int, top: int,
+                          rng: random.Random, margin: int = 24, tries: int = 60, step: int = 40, attempts: int = 40) -> list:
+    """
+    Top-left positions inside the area with no two boxes overlapping (None where nothing fits).
+    A greedy pass can block itself (a first sticker dropped in the middle), so whole arrangements are
+    retried and the one that places the most stickers wins. Deterministic for a given rng.
+    """
+    best: list = []
+    for _ in range(attempts):
+        out = _greedy_place(sizes, width, height, top, rng, margin, tries, step)
+        if sum(p is not None for p in out) > sum(p is not None for p in best):
+            best = out
+        if all(p is not None for p in best):
+            break
+    return best
+
+
 def create_mockups(sheet_path: str, image_paths: list[str], niche: str, out_dir: Path) -> list[str]:
     """Three listing images: hero, a tablet planner scene, and an 'included' grid. First is the main photo."""
     out_dir = Path(out_dir)
@@ -77,10 +113,11 @@ def create_mockups(sheet_path: str, image_paths: list[str], niche: str, out_dir:
     for y in range(120, 1260, 70):
         pd.line([(60, y), (1380, y)], fill=(226, 228, 238, 255), width=3)
     pd.rectangle([60, 40, 520, 76], fill=(214, 216, 230, 255))
-    for i, st in enumerate(stickers[:10]):
-        art = fit(st, rng.randint(220, 340)).rotate(rng.uniform(-14, 14), expand=True, resample=Image.BICUBIC)
-        pos = (rng.randint(40, 1440 - art.width - 40), rng.randint(100, 1260 - art.height - 40))
-        page.alpha_composite(art, pos)
+    arts = [fit(st, rng.randint(330, 430)).rotate(rng.uniform(-12, 12), expand=True, resample=Image.BICUBIC) for st in stickers[:8]]
+    spots = place_without_overlap([a.size for a in arts], 1440, 1260, 110, rng)
+    for art, spot in zip(arts, spots):
+        if spot:
+            page.alpha_composite(art, spot)
     device.alpha_composite(_rounded(page, 36), (60, 60))
     _shadowed(scene, _rounded(device, 90), ((SIZE - 1560) // 2, 360))
     _headline(scene, niche, "Use in Goodnotes, Notability and other planner apps")

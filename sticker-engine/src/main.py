@@ -150,10 +150,8 @@ def _stage_package(niche_id: int, niche_name: str) -> None:
 
 
 def _sample_subjects(niche_id: int) -> list[str]:
-    path = _prompts_file(niche_id)
-    if not path.exists():
-        return []
-    return [p.split(",")[0] for p in json.loads(path.read_text(encoding="utf-8"))][:8]
+    """Subjects of the stickers that are IN the pack. Rejected stickers must never appear in the listing."""
+    return [i["prompt"].split(",")[0] for i in db.get_images_for_niche(niche_id, kept=True)][:8]
 
 
 def _stage_list(niche_id: int, niche_name: str) -> None:

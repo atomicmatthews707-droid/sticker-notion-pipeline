@@ -386,3 +386,11 @@ def test_failed_cutout_is_rejected_before_it_costs_a_qa_call(monkeypatch, tmp_pa
     monkeypatch.setattr(main.config, "int_setting", lambda e, p, d: 0)
     main._stage_filter(nid, "cats")
     assert qa_calls == [] and len(db.get_images_for_niche(nid, kept=False)) == 2
+
+
+def test_listing_never_names_a_rejected_sticker(monkeypatch, tmp_path):
+    """A live run advertised an apple pie that QA had rejected."""
+    nid = new_niche()
+    for i, (subject, kept) in enumerate([("Cozy mug", True), ("Baked apple pie", False), ("Pumpkin", True)]):
+        db.save_image_record(nid, f"{subject}, cute kawaii style", f"/x{i}.png", kept=kept)
+    assert main._sample_subjects(nid) == ["Cozy mug", "Pumpkin"]

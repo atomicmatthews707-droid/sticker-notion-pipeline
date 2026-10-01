@@ -7,18 +7,43 @@ Generates digital sticker packs with Gemini, filters them automatically, and (on
 
 | Stage | Module | State |
 |---|---|---|
-| Trend scouting | `src/trend_scout/` | Etsy, Reddit, Google Trends scouts and the ranker are built. Pinterest returns nothing. |
-| Prompts | `src/generator/prompt_builder.py` | Built. Banned-term and near-duplicate filtering. |
+| Trend scouting | `src/trend_scout/` | Etsy, Reddit, Google Trends scouts and the ranker are built (not run live: Etsy is blocked in the build environment, Reddit has no credentials). Pinterest returns nothing. |
+| Prompts | `src/generator/prompt_builder.py` | Built and proven live. |
 | Image generation | `src/generator/image_gen.py` | Built and proven live: resumable, budget-aware, saves real PNGs. |
-| Style guard | `src/generator/style_guard.py` | Built. Local checks only, no API cost. |
-| QA filter | `src/quality/auto_filter.py` | **Not built.** Raises `NotImplementedError`. |
+| Style guard | `src/generator/style_guard.py` | Built. Local checks only. |
+| Cutout | `src/quality/bg_remover.py` | Built and proven live. Default is a border flood fill that never hollows out white areas. `rembg` is optional. |
+| QA filter | `src/quality/auto_filter.py` | Built and proven live. Judges the finished cutout on a grey backdrop. Calibrated against real and synthetic flaws. |
 | Dedupe | `src/quality/deduper.py` | Built. |
-| Background removal | `src/quality/bg_remover.py` | Built and proven live with `rembg` (open-licence model). The no-ML `floodfill` fallback leaves white inside holes such as mug handles. |
-| Packaging | `src/packaging/` | **Not built.** Raises `NotImplementedError`. |
-| Listing copy, Gumroad, digest | `src/publisher/`, `src/digest.py` | **Not built.** Raise `NotImplementedError`. |
-| Etsy lister | `src/publisher/etsy_lister.py` | Written, never run, and its compliance values are unverified. Do not enable. |
+| Packaging | `src/packaging/` | Built and proven live: sheet, three listing images made in code, Goodnotes PDF, zip. |
+| Listing copy | `src/publisher/listing_writer.py` | Built and proven live. Validated; AI-disclosure line enforced in code. |
+| Publish kit | `src/publisher/kit.py` | Built. Listing text, files and a checklist for uploading by hand. |
+| Digest | `src/digest.py` | Built. Saved as HTML daily; emailed when SMTP is configured (email sending untested). |
+| Etsy | `src/publisher/etsy_lister.py` | **Disabled** unless `ETSY_ENABLED=1`. Never run live (host blocked, no credentials). Values need checking before use. |
+| Gumroad | `src/publisher/gumroad_lister.py` | **Not available.** Use the publish kit. |
 
-Unbuilt stages fail loudly: the niche is marked `FAILED` with the reason. Nothing is ever faked as published.
+## What a finished pack looks like
+
+When a niche passes every stage it ends as `READY`, not `PUBLISHED`, unless a marketplace actually published it.
+Look in `output/niche_<id>/pack/publish_kit/`: `etsy_listing.txt`, `gumroad_listing.txt`, `CHECKLIST.md`,
+`sticker_pack.zip` and `previews/`. Upload by hand, or enable Etsy once it has been verified. The daily digest lists
+every `READY` pack.
+
+## Quality gate
+
+Each sticker is cut out first, then judged by the vision model while sitting on a grey backdrop, so cutout
+problems (haze, see-through areas, fringes) are visible. A score of 7 or more is kept (`config qa.min_score`).
+Known limitations:
+
+- White enclosed by a loop (a mug handle, a small vine curl) stays white. The cutout never deletes interior content,
+  so a white fill (a ghost, a blanket) can never become see-through. The QA rubric does not penalise this.
+- In a 5-sticker test the filter accepted 4 of 5 (80%); in an earlier test it accepted 2 of 5 (40%). Five samples
+  cannot show the true rate. Watch the digest: a long-run rate above 90% or below 20% means the rubric needs work.
+
+## Cost
+
+Measured on a 5-sticker run: about $0.42 for 5 generated stickers ($0.335 images, about $0.08 vision QA, under $0.01
+text). The vision QA costs about $0.016 per image, more than the handoff estimated, because the model spends tokens
+thinking. Extrapolated to 40 stickers per pack: roughly $3.40 before rejects.
 
 ## Setup
 
@@ -38,6 +63,8 @@ uvicorn src.main:app --port 8080
 | `DB_URL` | SQLite only (`sqlite+aiosqlite:///path.db`). |
 | `OUTPUT_DIR` | Where images and packs are written (default `output/`). |
 | `DISABLE_LOOP=1` | Tick mode: one cycle per `POST /tick` instead of a background loop. |
+| `SUBJECTS_PER_NICHE`, `MIN_PACK_IMAGES` | Test-run overrides (production defaults: 40 stickers, 10 minimum). A 5-sticker test uses 5 and 3. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `DIGEST_EMAIL_TO` | Digest email. Without them the digest is saved but not emailed. |
 
 ## How it behaves
 
@@ -52,9 +79,10 @@ uvicorn src.main:app --port 8080
 
 - The database is SQLite, so use a persistent volume (Docker, Fly, Railway). Cloud Run's disk is ephemeral and is not
   supported until a Postgres backend is added. `docker-compose.yml` mounts a named volume at `/data`.
-- Background removal uses `isnet-general-use` (Apache-2.0). `rembg`'s default model is non-commercial; do not switch to it.
-  The first run downloads the model (about 170 MB) into `U2NET_HOME`.
-- `deploy/cloud-run.yaml`, `deploy/railway.json` and `n8n/workflow.json` are empty placeholders for now.
+- Background removal needs no model by default. If you switch to `rembg`, use `isnet-general-use` (Apache-2.0); `rembg`'s
+  default model is non-commercial.
+- `deploy/fly.toml`, `deploy/railway.json` and `n8n/workflow.json` are written from the platforms' documented formats
+  and have not been run. `deploy/cloud-run.yaml` explains why Cloud Run is unsupported.
 
 ## Tests
 
