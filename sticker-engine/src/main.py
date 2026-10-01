@@ -9,8 +9,9 @@ A cycle: budget check -> refresh trends (every few hours) -> take a niche -> run
 GENERATING -> FILTERING -> PACKAGING -> LISTING -> PUBLISHED.
 
 State lives in the database, so a crash resumes the same niche at the stage it was in. Stages are
-idempotent. A stage that is not built yet raises NotImplementedError and the niche is marked FAILED
-with that message, never faked as published.
+idempotent. A stage that is not built raises NotImplementedError and the niche is marked FAILED, never
+faked as published. When no marketplace publishes a finished pack, the niche becomes READY: the pack and a
+publish kit (listing text, files, checklist) exist and are waiting for you to upload them.
 
 Control endpoints (/tick, /digest/send) require ENGINE_API_TOKEN (Authorization: Bearer <token> or
 X-Engine-Token). Set ALLOW_UNAUTHENTICATED=1 only for local development.
@@ -30,6 +31,7 @@ from typing import Optional
 from fastapi import Depends, FastAPI, HTTPException, Request
 
 from src.shared import config
+from src.publisher import PublishUnavailable
 from src.shared.gemini_client import BudgetExceeded
 from src.shared.logger import get_logger
 from src.storage import db
@@ -42,6 +44,10 @@ TREND_REFRESH_HOURS = float(config.get("trend_scout.refresh_interval_hours", 6))
 STAGE_ORDER = ["GENERATING", "FILTERING", "PACKAGING", "LISTING"]
 
 _cycle_lock = threading.Lock()  # one pipeline cycle at a time per process
+
+
+class AwaitingPublish(Exception):
+    """The pack is finished but no marketplace published it. Not a failure."""
 
 
 # ── Stages ──────────────────────────────────────────────────────────────────────
@@ -113,30 +119,45 @@ def _stage_filter(niche_id: int, niche_name: str) -> None:
             db.update_image(img["id"], image_path=out)
 
     final = len(db.get_images_for_niche(niche_id, kept=True))
-    minimum = int(config.get("packaging.min_images", 10))
+    minimum = config.int_setting("MIN_PACK_IMAGES", "packaging.min_images", 10)
     if final < minimum:
         raise RuntimeError(f"Too few images survived filtering: {final} (need at least {minimum})")
     logger.info("FILTERING done: %d images ready to package", final)
 
 
+def _pack_dir(niche_id: int):
+    return config.output_dir() / f"niche_{niche_id}" / "pack"
+
+
 def _stage_package(niche_id: int, niche_name: str) -> None:
-    """PACKAGING: sheet layout -> mockup -> zip bundle."""
+    """PACKAGING: sheet layout -> mockups -> zip bundle (with the Goodnotes PDF)."""
     from src.packaging.bundler import bundle
-    from src.packaging.mockup_gen import create_mockup
+    from src.packaging.mockup_gen import create_mockups
     from src.packaging.sheet_layout import create_sheet
 
+    existing = db.get_pack_for_niche(niche_id)
+    if existing and existing.get("zip_path") and os.path.exists(existing["zip_path"]):
+        return  # packaged before a crash; the kept images cannot change after filtering
+    out_dir = _pack_dir(niche_id)
     image_paths = [i["image_path"] for i in db.get_images_for_niche(niche_id, kept=True)]
-    sheet_path, _preview = create_sheet(image_paths, niche_name)
-    mockup_path = create_mockup(sheet_path, niche_name)
-    zip_path = bundle(niche_name, image_paths, sheet_path, mockup_path, niche_id)
+    sheet_path, _preview = create_sheet(image_paths, out_dir)
+    mockups = create_mockups(sheet_path, image_paths, niche_name, out_dir)
+    zip_path = bundle(niche_name, image_paths, sheet_path, mockups, out_dir)
     db.save_pack_record(niche_id, zip_path)
-    logger.info("PACKAGING done: %s", zip_path)
+    logger.info("PACKAGING done: %s (%d stickers)", zip_path, len(image_paths))
+
+
+def _sample_subjects(niche_id: int) -> list[str]:
+    path = _prompts_file(niche_id)
+    if not path.exists():
+        return []
+    return [p.split(",")[0] for p in json.loads(path.read_text(encoding="utf-8"))][:8]
 
 
 def _stage_list(niche_id: int, niche_name: str) -> None:
-    """LISTING: write copy, publish to Etsy and Gumroad, store the URLs."""
-    from src.publisher.etsy_lister import create_listing as etsy_create
-    from src.publisher.gumroad_lister import create_product as gumroad_create
+    """LISTING: write copy, build the publish kit, publish where a marketplace is enabled."""
+    from src.publisher import etsy_lister, gumroad_lister
+    from src.publisher.kit import write_kit
     from src.publisher.listing_writer import write_listing
 
     pack = db.get_pack_for_niche(niche_id)
@@ -145,21 +166,35 @@ def _stage_list(niche_id: int, niche_name: str) -> None:
     if pack.get("etsy_url") or pack.get("gumroad_url"):
         return  # already listed before a crash; never publish twice
 
-    image_paths = [i["image_path"] for i in db.get_images_for_niche(niche_id, kept=True)]
-    listing_data = write_listing(niche_name, image_paths)
+    out_dir = _pack_dir(niche_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    listing_file = out_dir / "listing.json"
+    if listing_file.exists():
+        listing = json.loads(listing_file.read_text(encoding="utf-8"))  # reuse: copy is generated (and paid for) once
+    else:
+        image_paths = [i["image_path"] for i in db.get_images_for_niche(niche_id, kept=True)]
+        listing = write_listing(niche_name, image_paths, sample_subjects=_sample_subjects(niche_id))
+        listing_file.write_text(json.dumps(listing, indent=2), encoding="utf-8")
+
+    mockups = sorted(str(p) for p in out_dir.glob("mockup_*.jpg"))
+    kit_dir = write_kit(niche_name, listing, pack["zip_path"], mockups, out_dir)
 
     etsy_url = gumroad_url = ""
-    try:
-        etsy_url = etsy_create(listing_data, pack["zip_path"], "")
-    except Exception as e:
-        logger.warning("Etsy publish failed: %s", e)
-    try:
-        gumroad_url = gumroad_create(listing_data, pack["zip_path"])
-    except Exception as e:
-        logger.warning("Gumroad publish failed: %s", e)
-    if not etsy_url and not gumroad_url:
-        raise RuntimeError("Both Etsy and Gumroad publish failed")
+    if etsy_lister.is_enabled():
+        try:
+            etsy_url = etsy_lister.create_listing(listing, pack["zip_path"], mockups)
+        except PublishUnavailable as e:
+            logger.warning("Etsy skipped: %s", e)
+        except Exception as e:
+            logger.warning("Etsy publish failed: %s", e)
+    if gumroad_lister.is_enabled():
+        try:
+            gumroad_url = gumroad_lister.create_product(listing, pack["zip_path"], mockups)
+        except Exception as e:
+            logger.warning("Gumroad publish failed: %s", e)
 
+    if not etsy_url and not gumroad_url:
+        raise AwaitingPublish(f"Publish kit ready: {kit_dir}")
     db.update_pack_urls(niche_id, etsy_url, gumroad_url)
     logger.info("LISTING done. Etsy: %s Gumroad: %s", etsy_url, gumroad_url)
 
@@ -167,7 +202,7 @@ def _stage_list(niche_id: int, niche_name: str) -> None:
 def _run_pipeline_for_niche(niche_id: int, niche_name: str, start_status: Optional[str] = None) -> str:
     """
     Run a niche through its stages, starting at start_status when resuming a crashed run.
-    Returns "published", "failed" or "paused" (daily budget reached; resumes next cycle).
+    Returns "published", "ready" (finished, awaiting a manual upload), "failed" or "paused" (budget reached).
     """
     stages = [
         ("GENERATING", _stage_generate),
@@ -184,6 +219,10 @@ def _run_pipeline_for_niche(niche_id: int, niche_name: str, start_status: Option
         except BudgetExceeded as e:
             logger.warning("Niche %r paused at %s: %s", niche_name, status, e)
             return "paused"
+        except AwaitingPublish as e:
+            db.update_niche_status(niche_id, "READY", error_msg=str(e))
+            logger.info("Niche %r READY: %s", niche_name, e)
+            return "ready"
         except NotImplementedError as e:
             db.update_niche_status(niche_id, "FAILED", error_msg=f"NotImplemented: {e}")
             logger.error("Niche %r FAILED at %s: not implemented: %s", niche_name, status, e)
@@ -340,13 +379,11 @@ async def tick():
 
 @app.post("/digest/send", dependencies=[Depends(require_token)])
 async def send_digest_endpoint():
+    """Build today's digest, save it, and email it if SMTP is configured. Reports honestly whether it was emailed."""
     from src.digest import send_digest
 
-    try:
-        await asyncio.get_running_loop().run_in_executor(None, send_digest)
-    except NotImplementedError as e:
-        raise HTTPException(501, str(e))
-    return {"status": "sent"}
+    result = await asyncio.get_running_loop().run_in_executor(None, send_digest)
+    return {"status": "emailed" if result["emailed"] else "saved_not_emailed", **result}
 
 
 @app.get("/health")

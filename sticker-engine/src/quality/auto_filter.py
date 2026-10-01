@@ -1,6 +1,77 @@
-def filter_batch(images: list[dict], niche: str) -> None:
+"""Autonomous quality gate: a vision model scores every generated sticker against the QA rubric."""
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Optional
+
+from src.shared import config
+from src.shared.gemini_client import BudgetExceeded, GeminiClient, GeminiError
+from src.shared.logger import get_logger
+from src.storage import db
+
+logger = get_logger(__name__)
+_RUBRIC = config.ROOT / "config" / "prompts" / "qa_rubric.md"
+
+
+def _parse_score(data) -> tuple[float, str]:
+    """Pull (score 0-10, reason) from the model's JSON, or raise ValueError."""
+    if not isinstance(data, dict) or "score" not in data:
+        raise ValueError(f"missing score in {data!r}")
+    score = float(data["score"])
+    if not 0 <= score <= 10:
+        raise ValueError(f"score {score} outside 0-10")
+    return score, str(data.get("reason", ""))[:300]
+
+
+def filter_batch(images: list[dict], niche: str, client: Optional[GeminiClient] = None) -> dict:
     """
-    Vision QA (Batch 3). Contract: for each pending image record, score it against
-    config/prompts/qa_rubric.md and call db.update_image(id, qa_score=..., qa_reason=..., kept=...).
+    Score each pending image and write qa_score / qa_reason / kept to the DB. kept is decided here from
+    config qa.min_score, not by the model. Returns {"scored", "kept", "rejected"}.
+    Raises BudgetExceeded after saving partial results, and RuntimeError if API errors left images unjudged
+    (those stay pending and are retried on the next run).
     """
-    raise NotImplementedError("auto_filter.filter_batch is not built yet (Batch 3: vision QA gate)")
+    client = client or GeminiClient()
+    system = _RUBRIC.read_text(encoding="utf-8")
+    min_score = float(config.get("qa.min_score", 7))
+    stats = {"scored": 0, "kept": 0, "rejected": 0}
+    api_errors = 0
+    budget_hit = False
+
+    def judge(img: dict) -> None:
+        data = client.generate_vision_json(
+            f"Niche: {niche}\nScore this sticker.", Path(img["image_path"]).read_bytes(), "image/png", system=system
+        )
+        score, reason = _parse_score(data)
+        threshold = min_score + (float(config.get("qa.fallback_score_bonus", 1)) if client.vision_fallback_used else 0)
+        db.update_image(img["id"], qa_score=score, qa_reason=reason, kept=score >= threshold)
+        stats["scored"] += 1
+        stats["kept" if score >= threshold else "rejected"] += 1
+
+    workers = int(config.get("qa.max_workers", 3))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(judge, img): img for img in images}
+        for fut in as_completed(futures):
+            img = futures[fut]
+            try:
+                fut.result()
+            except BudgetExceeded:
+                budget_hit = True
+            except (ValueError, GeminiError) as e:
+                # The model could not give a usable verdict. Do not ship what was not judged.
+                db.update_image(img["id"], qa_score=0, qa_reason=f"qa unusable: {e}"[:300], kept=False)
+                stats["scored"] += 1
+                stats["rejected"] += 1
+            except Exception as e:
+                api_errors += 1
+                logger.warning("QA call failed for %s: %s", img["image_path"], e)
+
+    if stats["scored"]:
+        rate = stats["kept"] / stats["scored"]
+        logger.info("QA: %d scored, %d kept (%.0f%% accepted)", stats["scored"], stats["kept"], rate * 100)
+        if stats["scored"] >= 10 and (rate > 0.9 or rate < 0.2):
+            logger.warning("QA acceptance rate %.0f%% is outside the healthy range; review the rubric.", rate * 100)
+    if budget_hit:
+        raise BudgetExceeded("Daily budget reached during QA; judged images are saved, the rest resume later.")
+    if api_errors:
+        raise RuntimeError(f"QA could not judge {api_errors} images (API errors); they stay pending for the next run.")
+    return stats

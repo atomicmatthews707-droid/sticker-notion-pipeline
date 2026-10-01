@@ -77,3 +77,25 @@ def varied_image(seed: int, size=600) -> Image.Image:
         fill = (rng.randint(0, 200), rng.randint(0, 200), rng.randint(0, 200))
         d.ellipse(box, fill=fill) if rng.random() < 0.5 else d.rectangle(box, fill=fill)
     return img
+
+
+def transparent_sticker(seed: int, size=1024) -> Image.Image:
+    """An RGBA sticker on a transparent background, with generous empty margins like the real pipeline output."""
+    import random
+
+    rng = random.Random(seed)
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    cx, cy, r = size // 2, size // 2, rng.randint(180, 330)
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(rng.randint(60, 255), rng.randint(60, 255), rng.randint(60, 255), 255),
+              outline=(30, 30, 30, 255), width=10)
+    return img
+
+
+def save_stickers(tmp_path, n):
+    paths = []
+    for i in range(n):
+        p = tmp_path / f"s{i}.png"
+        transparent_sticker(i).save(p)
+        paths.append(str(p))
+    return paths

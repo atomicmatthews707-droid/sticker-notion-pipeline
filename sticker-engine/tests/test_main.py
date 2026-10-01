@@ -1,4 +1,5 @@
 import importlib
+import os
 import shutil
 
 import pytest
@@ -167,13 +168,6 @@ def test_generate_stage_fails_when_style_guard_rejects_everything(monkeypatch, t
         main._stage_generate(nid, "cats")
 
 
-def test_real_qa_filter_is_honestly_unbuilt():
-    nid = new_niche()
-    db.save_image_record(nid, "p", "/tmp/x.png")
-    with pytest.raises(NotImplementedError):
-        main._stage_filter(nid, "cats")
-
-
 def test_filter_stage_dedupes_removes_backgrounds_and_enforces_minimum(monkeypatch, tmp_path):
     nid = new_niche()
     ids = make_images(nid, tmp_path, 12)
@@ -219,7 +213,7 @@ def test_list_stage_never_publishes_twice_after_a_crash(monkeypatch):
     db.save_pack_record(nid, "/p.zip")
     db.update_pack_urls(nid, "https://etsy/1", "")
     called = []
-    monkeypatch.setattr("src.publisher.listing_writer.write_listing", lambda *a: called.append("w"))
+    monkeypatch.setattr("src.publisher.listing_writer.write_listing", lambda *a, **k: called.append("w"))
     main._stage_list(nid, "cats")
     assert called == []
 
@@ -229,17 +223,94 @@ def test_list_stage_needs_a_pack():
         main._stage_list(new_niche(), "cats")
 
 
+LISTING = {"title": "T", "description": "D", "tags": ["a"] * 13, "gumroad_title": "G", "gumroad_description": "GD",
+           "price_usd": 5.0, "sticker_count": 5}
+
+
+def pack_with_zip(nid, tmp_path):
+    zp = tmp_path / "pack.zip"
+    zp.write_bytes(b"zip")
+    db.save_pack_record(nid, str(zp))
+    return zp
+
+
+def test_list_stage_without_publishers_leaves_a_kit_and_signals_ready(monkeypatch, tmp_path):
+    nid = new_niche()
+    pack_with_zip(nid, tmp_path)
+    monkeypatch.setattr("src.publisher.listing_writer.write_listing", lambda *a, **k: dict(LISTING))
+    with pytest.raises(main.AwaitingPublish, match="Publish kit ready"):
+        main._stage_list(nid, "cats")
+    kit = main._pack_dir(nid) / "publish_kit"
+    assert (kit / "etsy_listing.txt").exists() and (kit / "CHECKLIST.md").exists() and (kit / "sticker_pack.zip").exists()
+
+
+def test_listing_copy_is_generated_once_and_reused_on_resume(monkeypatch, tmp_path):
+    nid = new_niche()
+    pack_with_zip(nid, tmp_path)
+    calls = []
+    monkeypatch.setattr("src.publisher.listing_writer.write_listing", lambda *a, **k: calls.append(1) or dict(LISTING))
+    for _ in range(2):
+        with pytest.raises(main.AwaitingPublish):
+            main._stage_list(nid, "cats")
+    assert calls == [1]
+
+
+def test_list_stage_publishes_when_etsy_is_enabled(monkeypatch, tmp_path):
+    nid = new_niche()
+    pack_with_zip(nid, tmp_path)
+    monkeypatch.setattr("src.publisher.listing_writer.write_listing", lambda *a, **k: dict(LISTING))
+    monkeypatch.setattr("src.publisher.etsy_lister.is_enabled", lambda: True)
+    monkeypatch.setattr("src.publisher.etsy_lister.create_listing", lambda *a, **k: "https://etsy/42")
+    main._stage_list(nid, "cats")
+    assert db.get_pack_for_niche(nid)["etsy_url"] == "https://etsy/42"
+
+
+def test_failed_etsy_publish_still_leaves_the_kit_for_manual_upload(monkeypatch, tmp_path):
+    nid = new_niche()
+    pack_with_zip(nid, tmp_path)
+    monkeypatch.setattr("src.publisher.listing_writer.write_listing", lambda *a, **k: dict(LISTING))
+    monkeypatch.setattr("src.publisher.etsy_lister.is_enabled", lambda: True)
+
+    def boom(*a, **k):
+        raise RuntimeError("etsy down")
+
+    monkeypatch.setattr("src.publisher.etsy_lister.create_listing", boom)
+    with pytest.raises(main.AwaitingPublish):
+        main._stage_list(nid, "cats")
+
+
+def test_awaiting_publish_becomes_ready_not_failed(monkeypatch, stages):
+    def ready(i, n):
+        raise main.AwaitingPublish("Publish kit ready: /k")
+
+    monkeypatch.setattr(main, "_stage_list", ready)
+    nid = new_niche()
+    assert main._run_pipeline_for_niche(nid, "cats") == "ready"
+    assert status_of(nid) == ("READY", "Publish kit ready: /k")
+    assert db.get_niche_to_process() is None  # READY niches are not picked up again
+
+
+def test_package_stage_is_idempotent_and_builds_real_files(monkeypatch, tmp_path):
+    from tests.helpers import save_stickers
+
+    nid = new_niche()
+    for i, path in enumerate(save_stickers(tmp_path, 5)):
+        db.save_image_record(nid, f"p{i}", path, kept=True, qa_score=8)
+    main._stage_package(nid, "autumn cozy")
+    pack = db.get_pack_for_niche(nid)
+    assert pack["zip_path"].endswith("sticker_pack.zip") and os.path.exists(pack["zip_path"])
+    first = os.path.getmtime(pack["zip_path"])
+    main._stage_package(nid, "autumn cozy")
+    assert os.path.getmtime(pack["zip_path"]) == first  # nothing rebuilt on resume
+
+
 @pytest.mark.parametrize("module,func,args", [
-    ("src.quality.auto_filter", "filter_batch", ([], "n")),
-    ("src.packaging.sheet_layout", "create_sheet", ([], "n")),
-    ("src.packaging.mockup_gen", "create_mockup", ("s", "n")),
-    ("src.packaging.bundler", "bundle", ("n", [], "s", "m", 1)),
-    ("src.publisher.listing_writer", "write_listing", ("n", [])),
     ("src.publisher.gumroad_lister", "create_product", ({}, "z")),
-    ("src.digest", "send_digest", ()),
 ])
-def test_unbuilt_modules_raise_instead_of_faking_success(module, func, args):
-    with pytest.raises(NotImplementedError):
+def test_gumroad_is_honestly_unavailable(module, func, args):
+    from src.publisher import PublishUnavailable
+
+    with pytest.raises(PublishUnavailable):
         getattr(importlib.import_module(module), func)(*args)
 
 
@@ -275,10 +346,12 @@ def test_token_is_enforced(client, monkeypatch):
     assert client.post("/tick", headers={"X-Engine-Token": "s3cret"}).status_code == 200
 
 
-def test_digest_reports_unbuilt_instead_of_claiming_sent(client, monkeypatch):
+def test_digest_endpoint_saves_and_reports_it_was_not_emailed(client, monkeypatch):
     monkeypatch.setenv("ENGINE_API_TOKEN", "t")
     r = client.post("/digest/send", headers={"Authorization": "Bearer t"})
-    assert r.status_code == 501 and "not built" in r.json()["detail"]
+    body = r.json()
+    assert r.status_code == 200 and body["status"] == "saved_not_emailed" and body["emailed"] is False
+    assert os.path.exists(body["path"])
 
 
 def test_tick_in_loop_mode_does_not_start_a_second_runner(monkeypatch):

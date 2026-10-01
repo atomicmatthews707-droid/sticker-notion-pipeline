@@ -98,6 +98,7 @@ class GeminiClient:
         self.vision_model = os.getenv("GEMINI_MODEL_VISION", "gemini-3.1-pro-preview")
         self.image_model = os.getenv("GEMINI_IMAGE_MODEL", "gemini-3.1-flash-image")
         self.niche_id = niche_id
+        self.vision_fallback_used = False  # True once the text model had to stand in for the vision model
 
     # ── budget and accounting ──────────────────────────────────────────────────
 
@@ -156,7 +157,7 @@ class GeminiClient:
 
     # ── text and JSON ──────────────────────────────────────────────────────────
 
-    def _generate(self, model: str, prompt: str, system: Optional[str], json_mode: bool) -> str:
+    def _generate(self, model: str, prompt, system: Optional[str], json_mode: bool) -> str:
         from google.genai import types
 
         self._check_budget()
@@ -165,7 +166,9 @@ class GeminiClient:
             response_mime_type="application/json" if json_mode else None,
         )
         response = self._call(
-            lambda: self.client.models.generate_content(model=model, contents=[prompt], config=config_)
+            lambda: self.client.models.generate_content(
+                model=model, contents=prompt if isinstance(prompt, list) else [prompt], config=config_
+            )
         )
         usage = response.usage_metadata
         tokens_in = getattr(usage, "prompt_token_count", 0) or 0
@@ -186,6 +189,33 @@ class GeminiClient:
         for _ in range(max_attempts):
             try:
                 return parse_json(self._generate(self.text_model, prompt, system, json_mode=True))
+            except json.JSONDecodeError as e:
+                last = e
+        raise GeminiError(f"Gemini returned invalid JSON after {max_attempts} attempts: {last}")
+
+    # ── vision ─────────────────────────────────────────────────────────────────
+
+    def generate_vision_json(self, prompt: str, image_bytes: bytes, mime_type: str = "image/png",
+                             system: Optional[str] = None, max_attempts: int = 2):
+        """
+        Judge an image with the vision model and return parsed JSON. If that model is unavailable
+        (404), fall back to the text model and set vision_fallback_used so callers can tighten thresholds.
+        """
+        from google.genai import errors, types
+
+        contents = [types.Part.from_bytes(data=image_bytes, mime_type=mime_type), prompt]
+        model = self.text_model if self.vision_fallback_used else self.vision_model
+        last: Optional[Exception] = None
+        for _ in range(max_attempts):
+            try:
+                return parse_json(self._generate(model, contents, system, json_mode=True))
+            except errors.ClientError as e:
+                if getattr(e, "code", None) == 404 and not self.vision_fallback_used:
+                    logger.warning("Vision model %r unavailable; falling back to %r with stricter thresholds.", model, self.text_model)
+                    self.vision_fallback_used = True
+                    model = self.text_model
+                    continue
+                raise
             except json.JSONDecodeError as e:
                 last = e
         raise GeminiError(f"Gemini returned invalid JSON after {max_attempts} attempts: {last}")

@@ -5,6 +5,8 @@ sticker_style:
 qa:
   min_score: 7
   target_accept_rate: 0.6
+  fallback_score_bonus: 1   # added to min_score when the vision model is unavailable and the text model judges
+  max_workers: 3
 ranker_weights:
   etsy: 1.5
   reddit: 1.0
@@ -28,9 +30,19 @@ budget:
 listings:
   listing_rate_limit_per_day: 3
   new_shop_days: 14
+  etsy_who_made: i_did        # UNVERIFIED against Etsy's current AI guidance; the disclosure line is always added
+  etsy_when_made: "2020_2026" # Etsy's current-decade value; it changes over time
+  etsy_taxonomy_id:           # fetch from getSellerTaxonomyNodes and set here; the engine will not guess
+pricing:
+  tiers:                      # number of stickers -> USD; the highest tier not above the pack size applies
+    10: 5.0
+    25: 8.0
+    40: 12.0
 loop_interval_seconds: 300
 packaging:
-  min_images: 10
+  min_images: 10            # override for test runs with MIN_PACK_IMAGES
+  sheet_px: 3000
+  max_zip_mb: 19            # Etsy allows 20 MB per digital file
 bg_remover:
   method: rembg            # rembg | floodfill (no-ML fallback; leaves white inside holes such as mug handles)
   model: isnet-general-use # Apache-2.0. Do not use rembg's default model: its weights are non-commercial.

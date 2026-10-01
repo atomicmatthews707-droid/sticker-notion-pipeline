@@ -40,3 +40,9 @@ def output_dir() -> Path:
 
 def daily_budget_usd() -> float:
     return float(os.getenv("BUDGET_DAILY_LIMIT_USD") or get("budget.daily_limit_usd", 10.0))
+
+
+def int_setting(env: str, path: str, default: int) -> int:
+    """An int from an env var if set, else config.yaml, else the default (env wins; used for test runs)."""
+    raw = os.getenv(env)
+    return int(raw) if raw not in (None, "") else int(get(path, default))

@@ -1,8 +1,9 @@
 """SQLite storage. All pipeline helpers are synchronous (the loop runs in a thread).
 
 Image `kept` semantics: NULL = generated, awaiting QA; 1 = kept; 0 = rejected.
-Niche statuses: QUEUED -> GENERATING -> FILTERING -> PACKAGING -> LISTING -> PUBLISHED,
-or FAILED / DEPRIORITIZED. In-flight statuses are resumed after a crash.
+Niche statuses: QUEUED -> GENERATING -> FILTERING -> PACKAGING -> LISTING -> PUBLISHED, or READY
+(the pack and publish kit exist but no marketplace published it), FAILED, DEPRIORITIZED.
+In-flight statuses are resumed after a crash.
 """
 
 import asyncio
@@ -19,6 +20,7 @@ class Status(Enum):
     FILTERING = "FILTERING"
     PACKAGING = "PACKAGING"
     LISTING = "LISTING"
+    READY = "READY"  # packaged and listing copy written; waiting for a marketplace to publish
     PUBLISHED = "PUBLISHED"
     FAILED = "FAILED"
     DEPRIORITIZED = "DEPRIORITIZED"
@@ -244,8 +246,14 @@ def get_pending_images(niche_id: int) -> list[dict]:
 # ── Packs ───────────────────────────────────────────────────────────────────────
 
 def save_pack_record(niche_id: int, zip_path: str) -> int:
+    """Record the pack for a niche; re-packaging after a resume updates the same row."""
     conn = _conn()
     try:
+        existing = conn.execute("SELECT id FROM packs WHERE niche_id = ? ORDER BY id DESC LIMIT 1", (niche_id,)).fetchone()
+        if existing:
+            conn.execute("UPDATE packs SET zip_path = ? WHERE id = ?", (zip_path, existing[0]))
+            conn.commit()
+            return existing[0]
         cur = conn.execute("INSERT INTO packs (niche_id, zip_path) VALUES (?, ?)", (niche_id, zip_path))
         conn.commit()
         return cur.lastrowid
@@ -330,5 +338,43 @@ def get_niche_spend(niche_id: int) -> float:
             "SELECT COALESCE(SUM(cost_usd), 0.0) FROM spend_log WHERE niche_id = ?", (niche_id,)
         ).fetchone()
         return float(row[0])
+    finally:
+        conn.close()
+
+
+# ── Digest ──────────────────────────────────────────────────────────────────────
+
+def digest_data(day: Optional[str] = None) -> dict:
+    """Everything the daily digest reports, for one UTC day (default today)."""
+    day = day or _today()
+    conn = _conn()
+    try:
+        def rows(sql, *args):
+            return [dict(r) for r in conn.execute(sql, args).fetchall()]
+
+        scored = conn.execute(
+            "SELECT COUNT(*), COALESCE(SUM(kept), 0) FROM images WHERE qa_score IS NOT NULL AND date(created_at) = ?", (day,)
+        ).fetchone()
+        return {
+            "day": day,
+            "niches_discovered": conn.execute("SELECT COUNT(*) FROM niches WHERE date(created_at) = ?", (day,)).fetchone()[0],
+            "images_generated": conn.execute("SELECT COUNT(*) FROM images WHERE date(created_at) = ?", (day,)).fetchone()[0],
+            "qa_scored": scored[0],
+            "qa_kept": int(scored[1]),
+            "sample_rejects": rows(
+                "SELECT i.qa_reason, i.image_path, n.name AS niche FROM images i JOIN niches n ON n.id = i.niche_id "
+                "WHERE i.kept = 0 AND date(i.created_at) = ? ORDER BY i.id DESC LIMIT 5", day),
+            "published": rows(
+                "SELECT n.name, p.etsy_url, p.gumroad_url, p.spend_usd FROM niches n JOIN packs p ON p.niche_id = n.id "
+                "WHERE n.status = 'PUBLISHED' AND date(n.updated_at) = ?", day),
+            "ready": rows("SELECT name, error_msg AS note, updated_at FROM niches WHERE status = 'READY' ORDER BY updated_at DESC"),
+            "failed": rows(
+                "SELECT name, substr(error_msg, 1, 240) AS error FROM niches WHERE status = 'FAILED' AND date(updated_at) = ?", day),
+            "spend_total": get_today_spend(),
+            "spend_by_model": rows(
+                "SELECT model, ROUND(SUM(cost_usd), 4) AS cost, SUM(images_count) AS images, SUM(tokens_in) AS tokens_in, "
+                "SUM(tokens_out) AS tokens_out FROM spend_log WHERE date(created_at) = ? GROUP BY model ORDER BY cost DESC", day),
+            "queue": rows("SELECT name, ROUND(score, 2) AS score FROM niches WHERE status = 'QUEUED' ORDER BY score DESC, id LIMIT 5"),
+        }
     finally:
         conn.close()

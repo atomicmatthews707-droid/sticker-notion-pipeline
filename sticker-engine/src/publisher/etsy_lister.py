@@ -1,250 +1,113 @@
 """
-etsy_lister.py — Etsy Open API v3 publisher.
+etsy_lister.py: Etsy Open API v3 draft-listing publisher. DISABLED unless ETSY_ENABLED=1.
 
-HANDOFF compliance requirements (verified 2026-09-30):
-  - type: "download" is REQUIRED on digital listings or Etsy demands a shipping profile
-  - who_made: "collective" — Etsy's guidance for AI-generated items with disclosure
-    (do NOT use "i_did" without disclosure — policy violation risk)
-  - when_made: "2020_2024" — current decade value for recently made digital goods
-  - taxonomy_id: must be fetched from getSellerTaxonomyNodes at runtime (v1 hardcoded 6883, which was never verified)
-  - AI disclosure line must be present in description before publishing
-  - New-shop rate cap: max listings_rate_limit_per_day for first new_shop_days days
-
-OAuth2 PKCE flow: Etsy requires browser-based auth. The token must be obtained
-manually and stored in ETSY_OAUTH_TOKEN. See README for the one-time auth flow.
-
-AI Handoff: Etsy taxonomy ID is fetched and cached on first call because the
-node number can change. Do NOT hardcode it.
+Never run against the live API: the build environment could not reach Etsy and no credentials existed.
+Values below come from Etsy's public reference as found on 2026-10-01 and must be re-checked before use:
+  - when_made is a date range that changes (currently 2020_2026); it is configurable.
+  - who_made is configurable (config listings.etsy_who_made); confirm Etsy's current AI guidance.
+  - is_supply, type="download" and taxonomy_id are required for a digital listing.
+  - The taxonomy id must come from config/env (getSellerTaxonomyNodes); the engine never guesses one.
+  - The AI-disclosure line is always added to the description.
+Listings are created as drafts. New shops are limited to a few listings per day (config listings.*).
 """
 
 import os
-from datetime import datetime
-from typing import Optional
+import re
+from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 
+from src.publisher import PublishUnavailable
+from src.shared import config
+from src.shared.compliance import ensure_disclosure
 from src.shared.logger import get_logger
+from src.storage import db
 
 logger = get_logger(__name__)
-
-_ETSY_API_BASE = "https://openapi.etsy.com/v3/application"
-_AI_DISCLOSURE = "These stickers were designed with the help of AI image tools and hand-selected for this pack."
-
-# Cache taxonomy ID to avoid fetching it on every listing
-_taxonomy_id_cache: Optional[int] = None
+_API = "https://openapi.etsy.com/v3/application"
+ETSY_FILE_LIMIT_MB = 20
 
 
-def _get_auth_headers() -> dict:
-    token = os.getenv("ETSY_OAUTH_TOKEN", "")
-    api_key = os.getenv("ETSY_API_KEY", "")
-    if not token:
-        raise RuntimeError("ETSY_OAUTH_TOKEN not set — run the OAuth flow first (see README)")
-    return {
-        "Authorization": f"Bearer {token}",
-        "x-api-key": api_key,
-        "Content-Type": "application/json",
-    }
+def is_enabled() -> bool:
+    flag = os.getenv("ETSY_ENABLED", "").strip().lower() in ("1", "true", "yes")
+    return flag and all(os.getenv(k) for k in ("ETSY_API_KEY", "ETSY_OAUTH_TOKEN", "ETSY_SHOP_ID"))
 
 
-def _get_taxonomy_id() -> int:
-    """
-    Fetch the taxonomy node ID for digital stickers/printables from Etsy.
-    Cached after first successful fetch.
-    Falls back to a well-known value (6883 = Digital Prints) if fetch fails,
-    but logs a warning so the user can verify.
-    """
-    global _taxonomy_id_cache
-    if _taxonomy_id_cache is not None:
-        return _taxonomy_id_cache
+def _headers() -> dict:
+    return {"Authorization": f"Bearer {os.environ['ETSY_OAUTH_TOKEN']}", "x-api-key": os.environ["ETSY_API_KEY"]}
 
-    # Store in config file if available
-    config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "config.yaml")
-    if os.path.exists(config_path):
-        import yaml
-        with open(config_path) as f:
-            cfg = yaml.safe_load(f)
-        stored = cfg.get("listings", {}).get("etsy_taxonomy_id")
-        if stored:
-            _taxonomy_id_cache = int(stored)
-            return _taxonomy_id_cache
 
-    try:
-        resp = httpx.get(
-            f"{_ETSY_API_BASE}/seller-taxonomy/nodes",
-            headers=_get_auth_headers(),
-            timeout=15.0,
+def _taxonomy_id() -> int:
+    value = os.getenv("ETSY_TAXONOMY_ID") or config.get("listings.etsy_taxonomy_id")
+    if not value:
+        raise PublishUnavailable(
+            "No Etsy taxonomy id configured. Look up the digital stickers/printables node with "
+            "getSellerTaxonomyNodes and set listings.etsy_taxonomy_id (or ETSY_TAXONOMY_ID)."
         )
-        resp.raise_for_status()
-        nodes = resp.json().get("results", [])
-        # Search for "Digital Prints" or "Stickers" under Craft Supplies & Tools
-        for node in nodes:
-            name = node.get("name", "").lower()
-            if "digital" in name and ("print" in name or "sticker" in name):
-                _taxonomy_id_cache = node["id"]
-                logger.info(f"Found Etsy taxonomy node: {node['name']} (id={node['id']})")
-                return _taxonomy_id_cache
-        # Walk children if top-level didn't match
-        for node in nodes:
-            for child in node.get("children", []):
-                name = child.get("name", "").lower()
-                if "digital" in name or "sticker" in name or "printable" in name:
-                    _taxonomy_id_cache = child["id"]
-                    logger.info(f"Found Etsy taxonomy node (child): {child['name']} (id={child['id']})")
-                    return _taxonomy_id_cache
-    except Exception as e:
-        logger.warning(f"Could not fetch Etsy taxonomy nodes: {e}")
-
-    # Fallback to 6883 — warn loudly
-    logger.warning(
-        "Using fallback Etsy taxonomy_id=6883 (Digital Prints). "
-        "Verify this is correct in your Etsy Seller dashboard."
-    )
-    _taxonomy_id_cache = 6883
-    return _taxonomy_id_cache
+    return int(value)
 
 
-def _check_listing_rate_limit(shop_id: str) -> None:
-    """
-    HANDOFF: New shops that list dozens of items on day one get flagged.
-    Cap at listing_rate_limit_per_day for the first new_shop_days days.
-    """
-    import yaml
-    from src.storage.db import get_listings_today
-
-    config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "config.yaml")
-    try:
-        with open(config_path) as f:
-            cfg = yaml.safe_load(f)
-        rate_limit = cfg.get("listings", {}).get("listing_rate_limit_per_day", 3)
-        new_shop_days = cfg.get("listings", {}).get("new_shop_days", 14)
-    except Exception:
-        rate_limit = 3
-        new_shop_days = 14
-
-    # Check if shop is still in the new-shop grace period
-    # We use an env var for shop creation date rather than querying Etsy
-    shop_created_str = os.getenv("ETSY_SHOP_CREATED_DATE", "")
-    if shop_created_str:
+def _check_rate_limit() -> None:
+    """New shops that list many items at once get flagged: cap listings per day for the first weeks."""
+    limit = int(config.get("listings.listing_rate_limit_per_day", 3))
+    created = os.getenv("ETSY_SHOP_CREATED_DATE", "")
+    if created:
         try:
-            shop_created = datetime.fromisoformat(shop_created_str)
-            if (datetime.utcnow() - shop_created).days > new_shop_days:
-                return  # Past grace period, no rate limit
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(created).replace(tzinfo=timezone.utc)).days
+            if age > int(config.get("listings.new_shop_days", 14)):
+                return
         except ValueError:
-            pass  # Bad date format — apply rate limit to be safe
-
-    today_count = get_listings_today()
-    if today_count >= rate_limit:
-        raise RuntimeError(
-            f"New-shop listing rate cap: already listed {today_count} today "
-            f"(limit={rate_limit}). Try again tomorrow."
-        )
+            pass  # unreadable date: keep the cap, to be safe
+    today = db.get_listings_today()
+    if today >= limit:
+        raise PublishUnavailable(f"New-shop listing cap reached: {today} listed today (limit {limit}).")
 
 
-def _enforce_ai_disclosure(description: str) -> str:
-    """
-    HANDOFF compliance: description MUST contain the AI disclosure line.
-    Add it at the top if missing.
-    """
-    if _AI_DISCLOSURE.lower() not in description.lower():
-        logger.warning("AI disclosure missing from description — prepending it")
-        return f"{_AI_DISCLOSURE}\n\n{description}"
-    return description
+def _when_made() -> str:
+    """Etsy's date-range value, e.g. 2020_2026. Quote it in YAML: unquoted, YAML reads it as the number 20202026."""
+    value = config.get("listings.etsy_when_made", "2020_2026")
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}_\d{4}|\d{4}s|before_\d{4}|made_to_order", value):
+        raise PublishUnavailable(f"listings.etsy_when_made {value!r} is not a valid Etsy value; quote it, e.g. \"2020_2026\".")
+    return value
 
 
-def create_listing(listing_data: dict, zip_path: str, mockup_path: str) -> str:
-    """
-    Create a draft Etsy listing for a sticker pack.
-    Returns the listing URL on success.
-
-    listing_data keys: title, description, tags (list of 13), ...
-    """
-    shop_id = os.getenv("ETSY_SHOP_ID", "")
-    if not shop_id:
-        raise RuntimeError("ETSY_SHOP_ID not set")
-
-    # Rate limit check for new shops
-    _check_listing_rate_limit(shop_id)
-
-    # Enforce AI disclosure
-    description = _enforce_ai_disclosure(listing_data.get("description", ""))
-
-    # Enforce tag count (Etsy allows max 13)
-    tags = listing_data.get("tags", [])[:13]
-
-    taxonomy_id = _get_taxonomy_id()
-
-    payload = {
-        "title": listing_data.get("title", "Sticker Pack"),
-        "description": description,
-        "price": listing_data.get("price_usd", 8.00),
-        "quantity": 999,  # digital goods don't deplete
-        "who_made": "collective",   # AI-generated with human curation — "i_did" requires disclosure + risk
-        "when_made": "2020_2024",   # current decade value for recently made digital items
-        "taxonomy_id": taxonomy_id,
-        "type": "download",         # REQUIRED: prevents Etsy from demanding a shipping profile
-        "tags": tags,
-        "is_digital": True,
-        "state": "draft",           # publish as draft; review before activating
+def build_payload(listing_data: dict) -> dict:
+    return {
+        "title": listing_data["title"],
+        "description": ensure_disclosure(listing_data["description"]),
+        "price": float(listing_data.get("price_usd", 5.0)),
+        "quantity": 999,
+        "who_made": config.get("listings.etsy_who_made", "i_did"),
+        "when_made": _when_made(),
+        "is_supply": False,
+        "taxonomy_id": _taxonomy_id(),
+        "type": "download",
+        "tags": ",".join(list(listing_data["tags"])[:13]),  # form-encoded: comma-separated (unverified)
     }
 
-    headers = _get_auth_headers()
 
-    try:
-        resp = httpx.post(
-            f"{_ETSY_API_BASE}/shops/{shop_id}/listings",
-            headers=headers,
-            json=payload,
-            timeout=20.0,
-        )
-        resp.raise_for_status()
-        listing = resp.json()
-        listing_id = listing["listing_id"]
-        listing_url = f"https://www.etsy.com/listing/{listing_id}"
+def create_listing(listing_data: dict, zip_path: str, mockup_paths=None) -> str:
+    """Create a draft listing, upload the pack and the previews, and return the listing URL."""
+    if not is_enabled():
+        raise PublishUnavailable("Etsy publishing is disabled (set ETSY_ENABLED=1 and the Etsy credentials).")
+    size_mb = Path(zip_path).stat().st_size / 1_000_000
+    if size_mb > ETSY_FILE_LIMIT_MB:
+        raise PublishUnavailable(f"Pack is {size_mb:.1f} MB; Etsy allows {ETSY_FILE_LIMIT_MB} MB per file.")
+    _check_rate_limit()
+    shop = os.environ["ETSY_SHOP_ID"]
+    payload = build_payload(listing_data)
 
-        # Upload the zip as the digital file
-        if zip_path and os.path.exists(zip_path):
-            _upload_digital_file(shop_id, listing_id, zip_path, headers)
-
-        # Upload mockup as the primary listing image
-        if mockup_path and os.path.exists(mockup_path):
-            _upload_listing_image(shop_id, listing_id, mockup_path, headers)
-
-        logger.info(f"Etsy listing created (draft): {listing_url}")
-        return listing_url
-
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Etsy create_listing HTTP error: {e.response.status_code} — {e.response.text}")
-        raise
-
-
-def _upload_digital_file(shop_id: str, listing_id: int, zip_path: str, headers: dict) -> None:
-    """Upload the zip file as the downloadable digital product."""
+    resp = httpx.post(f"{_API}/shops/{shop}/listings", headers=_headers(), data=payload, timeout=30)
+    resp.raise_for_status()
+    listing_id = resp.json()["listing_id"]
     with open(zip_path, "rb") as f:
-        files = {"file": (os.path.basename(zip_path), f, "application/zip")}
-        # Remove Content-Type from headers — httpx sets it correctly for multipart
-        upload_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
-        resp = httpx.post(
-            f"{_ETSY_API_BASE}/shops/{shop_id}/listings/{listing_id}/files",
-            headers=upload_headers,
-            files=files,
-            timeout=60.0,
-        )
-        resp.raise_for_status()
-    logger.info(f"Digital file uploaded to listing {listing_id}")
-
-
-def _upload_listing_image(shop_id: str, listing_id: int, image_path: str, headers: dict) -> None:
-    """Upload the mockup/preview as the listing photo."""
-    with open(image_path, "rb") as f:
-        ext = os.path.splitext(image_path)[1].lower()
-        mime = "image/jpeg" if ext in (".jpg", ".jpeg") else "image/png"
-        files = {"image": (os.path.basename(image_path), f, mime)}
-        upload_headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
-        resp = httpx.post(
-            f"{_ETSY_API_BASE}/shops/{shop_id}/listings/{listing_id}/images",
-            headers=upload_headers,
-            files=files,
-            timeout=60.0,
-        )
-        resp.raise_for_status()
-    logger.info(f"Listing image uploaded to listing {listing_id}")
+        httpx.post(f"{_API}/shops/{shop}/listings/{listing_id}/files", headers=_headers(),
+                   files={"file": (Path(zip_path).name, f, "application/zip")}, timeout=120).raise_for_status()
+    for i, path in enumerate(mockup_paths or [], 1):
+        with open(path, "rb") as f:
+            httpx.post(f"{_API}/shops/{shop}/listings/{listing_id}/images", headers=_headers(),
+                       data={"rank": i}, files={"image": (Path(path).name, f, "image/jpeg")}, timeout=60).raise_for_status()
+    url = f"https://www.etsy.com/listing/{listing_id}"
+    logger.info("Etsy draft listing created: %s", url)
+    return url

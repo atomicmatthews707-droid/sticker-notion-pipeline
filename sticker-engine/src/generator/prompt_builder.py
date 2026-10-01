@@ -37,7 +37,7 @@ def clean_subjects(raw: list, limit: Optional[int] = None) -> list[str]:
 
 def build_prompts(niche: str, client: Optional[GeminiClient] = None) -> list[str]:
     """Ask the text model for distinct sticker subjects for a niche and turn them into image prompts."""
-    count = int(config.get("generator.subjects_per_niche", 40))
+    count = config.int_setting("SUBJECTS_PER_NICHE", "generator.subjects_per_niche", 40)
     if is_banned(niche):
         raise ValueError(f"Niche {niche!r} contains a banned term")
     client = client or GeminiClient()
