@@ -1,1 +1,38 @@
-app = 'sticker-engine'
+# Fly.io: always-on, background loop runs, SQLite on a volume.
+# Untested: written from Fly's documented format without access to a Fly account.
+#   fly launch --no-deploy --copy-config      (once; edit app name)
+#   fly volumes create engine_data --size 3
+#   fly secrets set GEMINI_API_KEY=... ENGINE_API_TOKEN=...
+#   fly deploy
+app = "sticker-engine"
+primary_region = "iad"
+
+[build]
+  dockerfile = "../Dockerfile"
+
+[env]
+  OUTPUT_DIR = "/data/output"
+  DB_URL = "sqlite+aiosqlite:////data/engine.db"
+  U2NET_HOME = "/data/models"
+
+[mounts]
+  source = "engine_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false   # the background loop must keep running
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/health"
+    interval = "30s"
+    timeout = "5s"
+
+[[vm]]
+  memory = "2gb"               # background removal loads an ONNX model
+  cpu_kind = "shared"
+  cpus = 2

@@ -1,1 +1,4 @@
-{}
+# Cloud Run is NOT supported yet.
+# The engine stores state in SQLite, and Cloud Run's disk is ephemeral, so progress and the daily budget
+# would be lost on every restart. Use Fly.io, Railway or Docker with a persistent volume (see deploy/fly.toml),
+# or add a Postgres backend to src/storage/db.py first.

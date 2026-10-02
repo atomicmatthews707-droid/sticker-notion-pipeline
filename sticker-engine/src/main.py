@@ -1,362 +1,503 @@
 """
-main.py — Sticker Engine orchestrator + FastAPI server.
+main.py — Sticker Engine orchestrator and FastAPI server.
 
 Two modes:
-  - Loop mode (default): runs the pipeline in a background thread indefinitely.
-  - Tick mode (DISABLE_LOOP=1): one pipeline cycle per POST /tick call.
-    Use this on Cloud Run (stateless) with Cloud Scheduler hitting /tick.
+  - Loop mode (default): runs pipeline cycles in a background thread.
+  - Tick mode (DISABLE_LOOP=1): one cycle per POST /tick (Cloud Scheduler / n8n).
 
-The loop:
-  budget check
-  → every 6h: refresh trends from scouts → rank → queue top niches
-  → take highest-scored QUEUED niche
-  → GENERATING → FILTERING → PACKAGING → LISTING → PUBLISHED
-  Any stage raising NotImplementedError marks the niche FAILED so we can see
-  which stub is next in the DB.
+A cycle: budget check -> refresh trends (every few hours) -> take a niche -> run its stages
+GENERATING -> FILTERING -> PACKAGING -> LISTING -> PUBLISHED.
 
-HANDOFF Phase 0 fix: _price_for_size normalizes dict keys to int before sorting
-(YAML may load numeric keys as strings, breaking sorted() ordering).
+State lives in the database, so a crash resumes the same niche at the stage it was in. Stages are
+idempotent. A stage that is not built raises NotImplementedError and the niche is marked FAILED, never
+faked as published. When no marketplace publishes a finished pack, the niche becomes READY: the pack and a
+publish kit (listing text, files, checklist) exist and are waiting for you to upload them.
+
+Control endpoints (/tick, /digest/send) require ENGINE_API_TOKEN (Authorization: Bearer <token> or
+X-Engine-Token). Set ALLOW_UNAUTHENTICATED=1 only for local development.
 """
 
-import os
 import asyncio
-import logging
+import hmac
+import json
+import os
 import threading
 import time
-from datetime import datetime, timedelta
+import traceback
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from typing import Optional
 
-from fastapi import FastAPI
-from src.storage.db import init_db, get_niche_to_process, update_niche_status, queue_niches
+from fastapi import Depends, FastAPI, HTTPException, Request
+from pydantic import BaseModel
+
+from src.shared import config
+from src.publisher import PublishUnavailable
+from src.shared import cancel
+from src.shared.design import rules_for
+from src.shared.gemini_client import BudgetExceeded
 from src.shared.logger import get_logger
+from src.storage import db
 
 logger = get_logger(__name__)
 
-# ── Config ─────────────────────────────────────────────────────────────────────
-DISABLE_LOOP = os.getenv("DISABLE_LOOP", "").strip() in ("1", "true", "yes")
-LOOP_INTERVAL = int(os.getenv("LOOP_INTERVAL_SECONDS", "300"))
-TREND_REFRESH_HOURS = 6
+DISABLE_LOOP = os.getenv("DISABLE_LOOP", "").strip().lower() in ("1", "true", "yes")
+LOOP_INTERVAL = int(os.getenv("LOOP_INTERVAL_SECONDS") or config.get("loop_interval_seconds", 300))
+TREND_REFRESH_HOURS = float(config.get("trend_scout.refresh_interval_hours", 6))
+STAGE_ORDER = ["GENERATING", "FILTERING", "PACKAGING", "LISTING"]
+
+_cycle_lock = threading.Lock()  # one pipeline cycle at a time per process
 
 
-# ── Pipeline stage imports (lazy: each stage only imported when needed) ─────────
-def _run_pipeline_for_niche(niche_id: int, niche_name: str) -> None:
+class AwaitingPublish(Exception):
+    """The pack is finished but no marketplace published it. Not a failure."""
+
+
+# ── Stages ──────────────────────────────────────────────────────────────────────
+
+def _prompts_file(niche_id: int):
+    return config.output_dir() / f"niche_{niche_id}" / "prompts.json"
+
+
+def _load_or_build_prompts(niche_id: int, niche_name: str) -> list[str]:
+    """Prompts are generated once and saved, so a resumed run asks for the same images."""
+    path = _prompts_file(niche_id)
+    if path.exists():
+        return json.loads(path.read_text(encoding="utf-8"))
+    from src.generator.prompt_builder import build_prompts
+
+    niche = db.get_niche(niche_id) or {}
+    prompts = build_prompts(
+        niche_name, brief=niche.get("brief") or "", style=niche.get("style") or "",
+        count=niche.get("target_count"), subjects=niche.get("subjects"), niche_id=niche_id,
+        pack_md=niche.get("pack_md") or "", verbatim=_options(niche_id)["verbatim"],
+        apply_style=_options(niche_id)["apply_style"], style_md=_options(niche_id)["style_md"],
+    )
+    if not prompts:
+        raise RuntimeError("prompt_builder returned no prompts")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(prompts, indent=2), encoding="utf-8")
+    return prompts
+
+
+def _options(niche_id: int) -> dict:
+    """Per-pack run options (variations, references, quality check, review-only), with safe defaults."""
+    o = (db.get_niche(niche_id) or {}).get("options") or {}
+    return {
+        "variants": max(1, int(o.get("variants", 1))), "references": o.get("references") or [],
+        "reference_mode": o.get("reference_mode", "style"), "apply_style": bool(o.get("apply_style", True)),
+        "verbatim": bool(o.get("verbatim", False)), "qa": bool(o.get("qa", True)), "build_pack": bool(o.get("build_pack", True)),
+        "style_md": o.get("style_md"), "only_image_ids": o.get("only_image_ids") or None,
+    }
+
+
+def _stage_generate(niche_id: int, niche_name: str) -> None:
+    """GENERATING: prompts -> images on disk and in the DB -> local style checks."""
+    from src.generator.image_gen import generate_images
+    from src.generator.style_guard import check as style_check
+
+    prompts = _load_or_build_prompts(niche_id, niche_name)
+    opts = _options(niche_id)
+    rules = rules_for(opts["style_md"])
+    generate_images(prompts, niche_id, variants=opts["variants"], references=opts["references"],
+                    reference_mode=opts["reference_mode"], aspect_ratio=rules.aspect)
+
+    pending = db.get_pending_images(niche_id)
+    for img in pending:
+        ok, reason = style_check(img["image_path"], strict=rules.guard == "strict")
+        if not ok:
+            logger.info("Style guard rejected %s: %s", img["image_path"], reason)
+            db.update_image(img["id"], kept=False, qa_reason=f"style: {reason}")
+    remaining = len(db.get_pending_images(niche_id))
+    if remaining == 0:
+        raise RuntimeError("Style guard rejected every generated image")
+    logger.info("GENERATING done: %d/%d images passed the style guard", remaining, len(pending))
+
+
+def _minimum_pack_size(niche_id: int) -> int:
+    """Fewest kept stickers worth packaging. A small requested pack needs only most of what was asked for."""
+    if not _options(niche_id)["build_pack"]:
+        return 0  # a review-only run just shows you what it made
+    configured = config.int_setting("MIN_PACK_IMAGES", "packaging.min_images", 10)
+    requested = (db.get_niche(niche_id) or {}).get("target_count")
+    return configured if not requested else min(configured, max(1, round(requested * 0.6)))
+
+
+def _stage_filter(niche_id: int, niche_name: str) -> None:
     """
-    Run one full niche through all pipeline stages sequentially.
-    Each stage transition updates the DB. NotImplementedError → FAILED.
-    Any other exception also marks FAILED with the traceback message.
-    This function runs in a thread, not in the async loop.
+    FILTERING: cut out the background -> vision QA on the cutout -> dedupe.
+    The cutout comes first so QA judges the finished sticker, including any damage the cutout caused.
     """
-    import traceback
+    from src.quality.auto_filter import filter_batch
+    from src.quality.bg_remover import remove_background
+    from src.quality.deduper import dedupe
 
+    rules = rules_for(_options(niche_id)["style_md"])
+    for img in db.get_pending_images(niche_id) if rules.cutout != "none" else []:
+        try:
+            out = remove_background(img["image_path"], method=rules.cutout)
+        except Exception as e:
+            logger.warning("Background removal failed for %s: %s", img["image_path"], e)
+            db.update_image(img["id"], kept=False, qa_reason=f"background removal failed: {e}"[:200])
+            continue
+        if out != img["image_path"]:
+            db.update_image(img["id"], image_path=out)
+
+    pending = db.get_pending_images(niche_id)
+    if pending and _options(niche_id)["qa"]:
+        filter_batch(pending, niche_name)  # writes qa_score / qa_reason / kept itself
+    elif pending:
+        for img in pending:
+            db.update_image(img["id"], kept=True, qa_reason="AI quality check skipped")
+        logger.info("AI quality check skipped: %d images kept for you to review", len(pending))
+
+    kept = db.get_images_for_niche(niche_id, kept=True)
+    unique_ids = {i["id"] for i in dedupe(kept)}
+    for img in kept:
+        if img["id"] not in unique_ids:
+            db.update_image(img["id"], kept=False, qa_reason="duplicate")
+
+    final = len(db.get_images_for_niche(niche_id, kept=True))
+    minimum = _minimum_pack_size(niche_id)
+    if final < minimum:
+        raise RuntimeError(f"Too few images survived filtering: {final} (need at least {minimum})")
+    logger.info("FILTERING done: %d images ready to package", final)
+
+
+def _pack_dir(niche_id: int):
+    return config.output_dir() / f"niche_{niche_id}" / "pack"
+
+
+def _chosen_images(niche_id: int) -> list[dict]:
+    """The stickers that go into the pack: the ones you dragged into Keep if you did, otherwise every kept one."""
+    only = _options(niche_id)["only_image_ids"]
+    kept = db.get_images_for_niche(niche_id, kept=True)
+    if only:
+        return [i for i in db.get_images_for_niche(niche_id, kept=None) if i["id"] in set(only)]
+    return kept
+
+
+def _stage_package(niche_id: int, niche_name: str) -> None:
+    """PACKAGING: sheet layout -> mockups -> zip bundle (with the Goodnotes PDF)."""
+    from src.packaging.bundler import bundle
+    from src.packaging.mockup_gen import create_mockups
+    from src.packaging.sheet_layout import create_sheet
+
+    existing = db.get_pack_for_niche(niche_id)
+    if existing and existing.get("zip_path") and os.path.exists(existing["zip_path"]):
+        return  # packaged before a crash; the kept images cannot change after filtering
+    out_dir = _pack_dir(niche_id)
+    image_paths = [i["image_path"] for i in _chosen_images(niche_id)]
+    sheet_path, _preview = create_sheet(image_paths, out_dir)
+    mockups = create_mockups(sheet_path, image_paths, niche_name, out_dir)
+    zip_path = bundle(niche_name, image_paths, sheet_path, mockups, out_dir)
+    db.save_pack_record(niche_id, zip_path)
+    logger.info("PACKAGING done: %s (%d stickers)", zip_path, len(image_paths))
+
+
+def _sample_subjects(niche_id: int) -> list[str]:
+    """Subjects of the stickers that are IN the pack. Rejected stickers must never appear in the listing."""
+    return [i["prompt"].split(",")[0] for i in _chosen_images(niche_id)][:8]
+
+
+def _stage_list(niche_id: int, niche_name: str) -> None:
+    """LISTING: write copy, build the publish kit, publish where a marketplace is enabled."""
+    from src.publisher import etsy_lister, gumroad_lister
+    from src.publisher.kit import write_kit
+    from src.publisher.listing_writer import write_listing
+
+    pack = db.get_pack_for_niche(niche_id)
+    if not pack:
+        raise RuntimeError("No pack record found for this niche")
+    if pack.get("etsy_url") or pack.get("gumroad_url"):
+        return  # already listed before a crash; never publish twice
+
+    out_dir = _pack_dir(niche_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    listing_file = out_dir / "listing.json"
+    if listing_file.exists():
+        listing = json.loads(listing_file.read_text(encoding="utf-8"))  # reuse: copy is generated (and paid for) once
+    else:
+        image_paths = [i["image_path"] for i in _chosen_images(niche_id)]
+        listing = write_listing(
+            niche_name, image_paths, sample_subjects=_sample_subjects(niche_id),
+            brief=(db.get_niche(niche_id) or {}).get("brief") or "", niche_id=niche_id,
+            pack_md=(db.get_niche(niche_id) or {}).get("pack_md") or "",
+        )
+        listing_file.write_text(json.dumps(listing, indent=2), encoding="utf-8")
+
+    mockups = sorted(str(p) for p in out_dir.glob("mockup_*.jpg"))
+    kit_dir = write_kit(niche_name, listing, pack["zip_path"], mockups, out_dir)
+
+    etsy_url = gumroad_url = ""
+    if etsy_lister.is_enabled():
+        try:
+            etsy_url = etsy_lister.create_listing(listing, pack["zip_path"], mockups)
+        except PublishUnavailable as e:
+            logger.warning("Etsy skipped: %s", e)
+        except Exception as e:
+            logger.warning("Etsy publish failed: %s", e)
+    if gumroad_lister.is_enabled():
+        try:
+            gumroad_url = gumroad_lister.create_product(listing, pack["zip_path"], mockups)
+        except Exception as e:
+            logger.warning("Gumroad publish failed: %s", e)
+
+    if not etsy_url and not gumroad_url:
+        raise AwaitingPublish(f"Publish kit ready: {kit_dir}")
+    db.update_pack_urls(niche_id, etsy_url, gumroad_url)
+    logger.info("LISTING done. Etsy: %s Gumroad: %s", etsy_url, gumroad_url)
+
+
+def _run_pipeline_for_niche(niche_id: int, niche_name: str, start_status: Optional[str] = None) -> str:
+    """
+    Run a niche through its stages, starting at start_status when resuming a crashed run.
+    Returns "published", "ready" (finished, awaiting a manual upload), "failed" or "paused" (budget reached).
+    """
     stages = [
         ("GENERATING", _stage_generate),
         ("FILTERING", _stage_filter),
         ("PACKAGING", _stage_package),
         ("LISTING", _stage_list),
     ]
+    first = STAGE_ORDER.index(start_status) if start_status in STAGE_ORDER else 0
 
+    build_pack = _options(niche_id)["build_pack"]
+    if not build_pack:
+        stages = [s for s in stages if s[0] in ("GENERATING", "FILTERING")]
+    outcome = _run_stages(niche_id, niche_name, stages[first:], final_status="PUBLISHED" if build_pack else "REVIEW")
+    _refresh_review(niche_id)
+    return outcome
+
+
+def _refresh_review(niche_id: int) -> None:
+    """Rebuild the pack review page; a problem here must never affect the pipeline."""
+    try:
+        from src.packaging.review_page import write_review
+
+        write_review(niche_id)
+    except Exception as e:
+        logger.warning("Could not write the review page for niche %s: %s", niche_id, e)
+
+
+def _run_stages(niche_id: int, niche_name: str, stages: list, final_status: str = "PUBLISHED") -> str:
     for status, fn in stages:
         try:
-            update_niche_status(niche_id, status)
+            db.update_niche_status(niche_id, status)
+            logger.info("Step started: %s", status)
+            cancel.check()
             fn(niche_id, niche_name)
+        except BudgetExceeded as e:
+            logger.warning("Niche %r paused at %s: %s", niche_name, status, e)
+            return "paused"
+        except cancel.Cancelled as e:
+            logger.warning("Stopped at %s: %s", status, e)
+            return "cancelled"
+        except AwaitingPublish as e:
+            db.update_niche_status(niche_id, "READY", error_msg=str(e))
+            logger.info("Niche %r READY: %s", niche_name, e)
+            return "ready"
         except NotImplementedError as e:
-            update_niche_status(niche_id, "FAILED", error_msg=f"NotImplemented: {e}")
-            logger.error(f"Niche {niche_name!r} FAILED at {status}: NotImplemented — {e}")
-            return
+            db.update_niche_status(niche_id, "FAILED", error_msg=f"NotImplemented: {e}")
+            logger.error("Niche %r FAILED at %s: not implemented: %s", niche_name, status, e)
+            return "failed"
         except Exception as e:
             tb = traceback.format_exc()
-            update_niche_status(niche_id, "FAILED", error_msg=f"{type(e).__name__}: {e}\n{tb[:500]}")
-            logger.error(f"Niche {niche_name!r} FAILED at {status}: {e}")
-            return
+            db.update_niche_status(niche_id, "FAILED", error_msg=f"{type(e).__name__}: {e}\n{tb[-500:]}")
+            logger.error("Niche %r FAILED at %s: %s", niche_name, status, e)
+            return "failed"
 
-    update_niche_status(niche_id, "PUBLISHED")
-    logger.info(f"Niche {niche_name!r} → PUBLISHED ✓")
-
-
-# ── Pipeline stage functions ────────────────────────────────────────────────────
-
-def _stage_generate(niche_id: int, niche_name: str) -> None:
-    """GENERATING: build prompts → generate images → style guard check."""
-    from src.generator.prompt_builder import build_prompts
-    from src.generator.image_gen import generate_images
-    from src.generator.style_guard import check as style_check
-    from src.storage.db import save_image_record
-
-    prompts = build_prompts(niche_name)
-    if not prompts:
-        raise RuntimeError("prompt_builder returned no prompts")
-
-    results = generate_images(prompts, niche_id)
-
-    # Style guard: reject blurry/blank images before they waste QA budget
-    kept = []
-    for r in results:
-        ok, reason = style_check(r["image_path"])
-        if ok:
-            kept.append(r)
-        else:
-            logger.info(f"Style guard rejected {r['image_path']}: {reason}")
-            save_image_record(niche_id, r["prompt"], r["image_path"], kept=False, qa_reason=reason)
-
-    if not kept:
-        raise RuntimeError("Style guard rejected all generated images")
-
-    logger.info(f"GENERATING done: {len(kept)}/{len(results)} images passed style guard")
+    db.update_niche_status(niche_id, final_status)
+    logger.info("Niche %r %s", niche_name, final_status)
+    return "published" if final_status == "PUBLISHED" else "review"
 
 
-def _stage_filter(niche_id: int, niche_name: str) -> None:
-    """FILTERING: vision QA → dedupe."""
-    from src.storage.db import get_images_for_niche
-    from src.quality.auto_filter import filter_batch
-    from src.quality.deduper import dedupe
-    from src.quality.bg_remover import remove_background
+# ── Prices, trends, budget ──────────────────────────────────────────────────────
 
-    images = get_images_for_niche(niche_id, kept=None)  # all style-guard-passed images
-    image_paths = [img["image_path"] for img in images]
-
-    # Auto-filter: vision model QA scores each image
-    kept_paths = filter_batch(image_paths, niche_name)
-
-    if len(kept_paths) < 10:
-        raise RuntimeError(f"Too few images survived QA: {len(kept_paths)} (need ≥10 for a pack)")
-
-    # Dedupe: phash Hamming distance < 8 = duplicate
-    unique_paths = dedupe(kept_paths)
-
-    # Background removal: rembg runs on white-background outputs from gemini-3.1-flash-image
-    final_paths = []
-    for p in unique_paths:
-        try:
-            nobg = remove_background(p)
-            final_paths.append(nobg)
-        except Exception as e:
-            logger.warning(f"bg_remover failed on {p}: {e} — using original")
-            final_paths.append(p)
-
-    logger.info(f"FILTERING done: {len(final_paths)} unique images after QA + dedupe + bg removal")
-
-
-def _stage_package(niche_id: int, niche_name: str) -> None:
-    """PACKAGING: sheet layout → mockup → zip bundle."""
-    from src.storage.db import get_images_for_niche, save_pack_record
-    from src.packaging.sheet_layout import create_sheet
-    from src.packaging.mockup_gen import create_mockup
-    from src.packaging.bundler import bundle
-
-    images = get_images_for_niche(niche_id, kept=True)
-    image_paths = [img["image_path"] for img in images]
-
-    sheet_path, preview_path = create_sheet(image_paths, niche_name)
-    mockup_path = create_mockup(sheet_path, niche_name)
-    zip_path = bundle(niche_name, image_paths, sheet_path, mockup_path, niche_id)
-
-    save_pack_record(niche_id, zip_path)
-    logger.info(f"PACKAGING done: {zip_path}")
-
-
-def _stage_list(niche_id: int, niche_name: str) -> None:
-    """LISTING: write copy → publish to Etsy + Gumroad → update pack record with URLs."""
-    from src.storage.db import get_pack_for_niche, get_images_for_niche, update_pack_urls
-    from src.publisher.listing_writer import write_listing
-    from src.publisher.etsy_lister import create_listing as etsy_create
-    from src.publisher.gumroad_lister import create_product as gumroad_create
-
-    pack = get_pack_for_niche(niche_id)
-    if not pack:
-        raise RuntimeError("No pack record found for this niche")
-
-    images = get_images_for_niche(niche_id, kept=True)
-    image_paths = [img["image_path"] for img in images]
-
-    listing_data = write_listing(niche_name, image_paths)
-
-    # Publish to Etsy (may be rate-limited on new shops — etsy_lister handles the cap)
-    etsy_url = ""
-    gumroad_url = ""
-    try:
-        etsy_url = etsy_create(listing_data, pack["zip_path"], "")
-    except Exception as e:
-        logger.warning(f"Etsy publish failed: {e} — continuing to Gumroad")
-
-    try:
-        gumroad_url = gumroad_create(listing_data, pack["zip_path"])
-    except Exception as e:
-        logger.warning(f"Gumroad publish failed: {e}")
-
-    if not etsy_url and not gumroad_url:
-        raise RuntimeError("Both Etsy and Gumroad publish failed")
-
-    update_pack_urls(niche_id, etsy_url, gumroad_url)
-    logger.info(f"LISTING done — Etsy: {etsy_url}  Gumroad: {gumroad_url}")
-
-
-# ── Phase 0 fix ─────────────────────────────────────────────────────────────────
 def _price_for_size(sizes_dict: dict) -> dict:
-    """
-    HANDOFF Phase 0: YAML may load numeric keys as strings or ints depending on
-    version/quoting. Normalize all keys to int before sorting so price tiers
-    are always ordered correctly (e.g. {10: ..., 25: ..., 50: ...}).
-    """
+    """Normalise price-tier keys to int (YAML may load them as strings) and sort them."""
     return dict(sorted({int(k): v for k, v in sizes_dict.items()}.items()))
 
 
-# ── Trend refresh ───────────────────────────────────────────────────────────────
-_last_trend_refresh: datetime = datetime.min
+_last_trend_refresh: Optional[datetime] = None
 
 
 def _maybe_refresh_trends() -> None:
-    """Refresh trends every TREND_REFRESH_HOURS. Falls back to niche_seeds.yaml if scouts fail."""
+    """Refresh trend signals every TREND_REFRESH_HOURS; fall back to the seed list if scouts find nothing."""
     global _last_trend_refresh
-
-    if (datetime.utcnow() - _last_trend_refresh).total_seconds() < TREND_REFRESH_HOURS * 3600:
+    now = datetime.now(timezone.utc)
+    if _last_trend_refresh and (now - _last_trend_refresh).total_seconds() < TREND_REFRESH_HOURS * 3600:
         return
 
-    logger.info("Refreshing trends from scouts...")
+    logger.info("Refreshing trends from scouts")
     try:
         from src.trend_scout.etsy_scraper import scan as etsy_scan
-        from src.trend_scout.reddit_scanner import scan as reddit_scan
         from src.trend_scout.google_trends import scan as trends_scan
         from src.trend_scout.pinterest_scout import scan as pinterest_scan
         from src.trend_scout.ranker import rank
+        from src.trend_scout.reddit_scanner import scan as reddit_scan
 
         signals = []
-        for scanner_name, scanner in [
-            ("etsy", etsy_scan),
-            ("reddit", reddit_scan),
-            ("google_trends", trends_scan),
-            ("pinterest", pinterest_scan),
-        ]:
+        for name, scanner in [("etsy", etsy_scan), ("reddit", reddit_scan), ("google_trends", trends_scan), ("pinterest", pinterest_scan)]:
             try:
                 got = scanner()
                 signals.extend(got)
-                logger.info(f"  {scanner_name}: {len(got)} signals")
+                logger.info("  %s: %d signals", name, len(got))
             except Exception as e:
-                logger.warning(f"  {scanner_name} scout error: {e}")
+                logger.warning("  %s scout error: %s", name, e)
 
         if signals:
-            top_niches = rank(signals)
-            queue_niches([n.name for n in top_niches])
-            logger.info(f"Queued {len(top_niches)} niches from scouts")
-        else:
-            _load_seed_niches()
-
+            top = rank(signals, recent_check=db.recently_published)
+            queued = db.queue_niches(top)
+            logger.info("Queued %d of %d ranked niches", queued, len(top))
+        _load_seed_niches()  # the wishlist in config/niche_seeds.yaml is always queued, whatever the scouts found
     except Exception as e:
-        logger.warning(f"Trend refresh failed: {e} — loading seeds")
+        logger.warning("Trend refresh failed: %s; loading seeds", e)
         _load_seed_niches()
 
-    _last_trend_refresh = datetime.utcnow()
+    _last_trend_refresh = now
 
 
 def _load_seed_niches() -> None:
-    """Fallback: queue niche seeds from config/niche_seeds.yaml."""
     import yaml
-    seeds_path = os.path.join(os.path.dirname(__file__), "..", "config", "niche_seeds.yaml")
+
+    seeds_path = config.ROOT / "config" / "niche_seeds.yaml"
     try:
-        with open(seeds_path) as f:
-            data = yaml.safe_load(f)
-        seeds = data.get("seeds", [])
-        queue_niches(seeds)
-        logger.info(f"Loaded {len(seeds)} seed niches from niche_seeds.yaml")
+        seeds = (yaml.safe_load(seeds_path.read_text(encoding="utf-8")) or {}).get("seeds", [])
+        logger.info("Loaded %d seed niches (%d new)", len(seeds), db.queue_niches(seeds))
     except Exception as e:
-        logger.error(f"Failed to load seed niches: {e}")
+        logger.error("Failed to load seed niches: %s", e)
 
 
-# ── Budget check ────────────────────────────────────────────────────────────────
 def _check_budget() -> bool:
-    """True if we're under the daily spend limit. Logs and returns False if over."""
-    from src.storage.db import get_today_spend
-    from src.shared.gemini_client import GeminiClient
-
-    limit = float(os.getenv("BUDGET_DAILY_LIMIT_USD", "10.0"))
-    spent = get_today_spend()
+    spent, limit = db.get_today_spend(), config.daily_budget_usd()
     if spent >= limit:
-        logger.warning(f"Daily budget cap hit: ${spent:.2f} / ${limit:.2f}. Pausing until tomorrow.")
+        logger.warning("Daily budget cap hit: $%.2f of $%.2f", spent, limit)
         return False
     return True
 
 
-# ── Background loop ─────────────────────────────────────────────────────────────
+# ── Cycle and loop ──────────────────────────────────────────────────────────────
+
+def _run_cycle() -> dict:
+    """One full cycle. Safe to call from the loop and from /tick; only one runs at a time."""
+    if not _cycle_lock.acquire(blocking=False):
+        return {"status": "busy"}
+    try:
+        if not _check_budget():
+            return {"status": "budget_exhausted"}
+        _maybe_refresh_trends()
+        niche = db.get_niche_to_process()
+        if not niche:
+            return {"status": "idle"}
+        resumed = niche["status"] in STAGE_ORDER
+        logger.info("%s niche %r (id=%s)", "Resuming" if resumed else "Processing", niche["name"], niche["id"])
+        outcome = _run_pipeline_for_niche(niche["id"], niche["name"], niche["status"])
+        return {"status": outcome, "niche": niche["name"], "resumed": resumed}
+    finally:
+        _cycle_lock.release()
+
+
 def _background_loop() -> None:
-    """Runs in a daemon thread. One pipeline cycle per iteration."""
     logger.info("Sticker Engine loop started")
     while True:
         try:
-            if not _check_budget():
-                # Budget exhausted — sleep until midnight UTC
-                now = datetime.utcnow()
-                tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0)
-                sleep_secs = (tomorrow - now).total_seconds()
-                logger.info(f"Sleeping until budget resets in {sleep_secs/3600:.1f}h")
-                time.sleep(sleep_secs)
+            result = _run_cycle()
+            if result["status"] == "budget_exhausted":
+                now = datetime.now(timezone.utc)
+                reset = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
+                time.sleep((reset - now).total_seconds())
                 continue
-
-            _maybe_refresh_trends()
-
-            niche = get_niche_to_process()
-            if not niche:
-                logger.info("No queued niches — sleeping")
-                time.sleep(LOOP_INTERVAL)
-                continue
-
-            logger.info(f"Processing niche: {niche['name']!r} (id={niche['id']})")
-            _run_pipeline_for_niche(niche["id"], niche["name"])
-
         except Exception as e:
-            logger.error(f"Loop error: {e}", exc_info=True)
-
+            logger.error("Loop error: %s", e, exc_info=True)
         time.sleep(LOOP_INTERVAL)
 
 
-# ── FastAPI app ─────────────────────────────────────────────────────────────────
+# ── API ─────────────────────────────────────────────────────────────────────────
+
+def require_token(request: Request) -> None:
+    """Guard for endpoints that spend money. Fails closed when no token is configured."""
+    expected = os.getenv("ENGINE_API_TOKEN", "")
+    if not expected:
+        if os.getenv("ALLOW_UNAUTHENTICATED", "").strip().lower() in ("1", "true", "yes"):
+            return
+        raise HTTPException(503, "ENGINE_API_TOKEN is not set; refusing unauthenticated control requests")
+    auth = request.headers.get("authorization", "")
+    supplied = auth[7:] if auth.lower().startswith("bearer ") else request.headers.get("x-engine-token", "")
+    if not hmac.compare_digest(supplied.encode(), expected.encode()):
+        raise HTTPException(401, "Invalid or missing token")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start background loop on app startup (unless DISABLE_LOOP=1)."""
-    await init_db()
+    await db.init_db()
     if not DISABLE_LOOP:
-        thread = threading.Thread(target=_background_loop, daemon=True, name="pipeline-loop")
-        thread.start()
+        threading.Thread(target=_background_loop, daemon=True, name="pipeline-loop").start()
         logger.info("Pipeline loop started in background thread")
     else:
-        logger.info("DISABLE_LOOP=1 — tick mode only")
+        logger.info("DISABLE_LOOP=1: tick mode only")
     yield
 
 
 app = FastAPI(title="Sticker Engine", lifespan=lifespan)
 
 
-@app.post("/tick")
+@app.post("/tick", dependencies=[Depends(require_token)])
 async def tick():
-    """
-    Run one pipeline cycle synchronously (for Cloud Run / n8n).
-    Returns immediately in loop mode (loop is already running in background).
-    """
-    if DISABLE_LOOP:
-        # Run one cycle in a thread so we don't block the event loop
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, _tick_once)
-    return {"status": "ok", "mode": "tick" if DISABLE_LOOP else "loop"}
+    """Run one pipeline cycle (tick mode). In loop mode the background loop already does this."""
+    if not DISABLE_LOOP:
+        return {"status": "loop_running"}
+    return await asyncio.get_running_loop().run_in_executor(None, _run_cycle)
 
 
-def _tick_once() -> None:
-    """One full pipeline cycle for tick mode."""
-    if not _check_budget():
-        logger.warning("Budget exhausted, tick skipped")
-        return
-    _maybe_refresh_trends()
-    niche = get_niche_to_process()
-    if niche:
-        _run_pipeline_for_niche(niche["id"], niche["name"])
+class PackRequest(BaseModel):
+    name: str = ""
+    markdown: str = ""      # a whole pack file; its title, count, brief and subjects are used
+    brief: str = ""
+    style: str = ""
+    count: Optional[int] = None
+    subjects: Optional[list[str]] = None
+
+
+@app.post("/niches", dependencies=[Depends(require_token)])
+async def request_pack(req: PackRequest):
+    """Ask for a specific pack. It goes to the front of the queue."""
+    from src.shared.banned import is_banned
+
+    if req.markdown.strip():
+        from src.shared.design import request_from_markdown
+
+        try:
+            fields = request_from_markdown(req.markdown)
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+        req = PackRequest(**{k: v for k, v in fields.items() if k != "pack_md"})
+        req_md = fields["pack_md"]
     else:
-        logger.info("No queued niches on this tick")
+        req_md = ""
+    if not 1 <= len(req.name.strip()) <= 120:
+        raise HTTPException(422, "name must be 1-120 characters")
+    if req.count is not None and not 1 <= req.count <= 60:
+        raise HTTPException(422, "count must be between 1 and 60")
+    if req.subjects and (len(req.subjects) > 60 or any(not 2 <= len(x) <= 120 for x in req.subjects)):
+        raise HTTPException(422, "subjects: at most 60, each 2-120 characters")
+    for text in (req.name, req.brief, req.style, *(req.subjects or [])):
+        if text and is_banned(text):
+            raise HTTPException(422, f"banned term in the request: {text!r}")
+    try:
+        niche_id = db.queue_request(req.name, req.brief, req.style, req.count, req.subjects, pack_md=req_md)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    return {"status": "queued", "id": niche_id}
 
 
-@app.post("/digest/send")
+@app.post("/digest/send", dependencies=[Depends(require_token)])
 async def send_digest_endpoint():
-    """Trigger the nightly digest email."""
+    """Build today's digest, save it, and email it if SMTP is configured. Reports honestly whether it was emailed."""
     from src.digest import send_digest
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, send_digest)
-    return {"status": "sent"}
+
+    result = await asyncio.get_running_loop().run_in_executor(None, send_digest)
+    return {"status": "emailed" if result["emailed"] else "saved_not_emailed", **result}
 
 
 @app.get("/health")

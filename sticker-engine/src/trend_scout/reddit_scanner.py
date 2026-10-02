@@ -9,7 +9,6 @@ HANDOFF: subreddits to watch — r/PlannerAddicts, r/DigitalPlanning, r/GoodNote
 
 import os
 import logging
-from typing import Optional
 
 from src.trend_scout import NicheSignal
 

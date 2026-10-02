@@ -2,9 +2,18 @@ sticker_style:
   aesthetic: "cute kawaii flat vector illustration"
   background: "plain flat pure white background, no shadow, no border"
   composition: "centered subject, thick outline, minimal detail"
+image:
+  size: 4K                  # 1K | 2K | 4K. Bigger is sharper and costs more per image.
+  quality_phrase: "ultra-high-definition, razor-sharp edges, super clean crisp lines, print-ready quality"
+  price_usd:                # per image. ASSUMED, not measured: check Google's billing page after a run and edit here.
+    1K: 0.067
+    2K: 0.134
+    4K: 0.24
 qa:
   min_score: 7
   target_accept_rate: 0.6
+  fallback_score_bonus: 1   # added to min_score when the vision model is unavailable and the text model judges
+  max_workers: 3
 ranker_weights:
   etsy: 1.5
   reddit: 1.0
@@ -24,8 +33,23 @@ generator:
   max_workers: 4
   use_batch_api: false
 budget:
-  daily_limit_usd: 10.0
+  daily_limit_usd: 2.0      # raise this when you add credit; BUDGET_DAILY_LIMIT_USD overrides it
 listings:
   listing_rate_limit_per_day: 3
   new_shop_days: 14
+  etsy_who_made: i_did        # UNVERIFIED against Etsy's current AI guidance; the disclosure line is always added
+  etsy_when_made: "2020_2026" # Etsy's current-decade value; it changes over time
+  etsy_taxonomy_id:           # fetch from getSellerTaxonomyNodes and set here; the engine will not guess
+pricing:
+  tiers:                      # number of stickers -> USD; the highest tier not above the pack size applies
+    10: 5.0
+    25: 8.0
+    40: 12.0
 loop_interval_seconds: 300
+packaging:
+  min_images: 10            # override for test runs with MIN_PACK_IMAGES
+  sheet_px: 3000
+  max_zip_mb: 19            # Etsy allows 20 MB per digital file
+bg_remover:
+  method: floodfill          # floodfill (default, safe) | rembg (optional: pip install "rembg[cpu]")
+  model: isnet-general-use   # rembg only. Apache-2.0. Never use rembg's default model: its weights are non-commercial.

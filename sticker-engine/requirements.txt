@@ -1,18 +1,17 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
-google-genai>=1.0.0
+google-genai==2.26.0
 httpx>=0.27.0
 selectolax>=0.3.21
 praw>=7.7.0
 pytrends>=4.9.2
 pillow>=10.4.0
+numpy>=1.26
 imagehash>=4.3.1
-rembg>=2.0.57
-aiosqlite>=0.20.0
-asyncpg>=0.29.0
-pydantic>=2.8.0
-pydantic-settings>=2.4.0
-python-dotenv>=1.0.0
+scipy>=1.11
+# Optional alternative cutout (bg_remover.method: rembg): pip install "rembg[cpu]"
+pyyaml>=6.0
 jinja2>=3.1.4
 reportlab>=4.2.0
-rich>=13.7.0
+python-dotenv>=1.0.0
+pytest>=7.0.0

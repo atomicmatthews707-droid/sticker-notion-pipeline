@@ -1,0 +1,555 @@
+{
+  "template_name": "Atomic Habits & Life Architecture OS",
+  "databases": [
+    {
+      "name": "Life Areas",
+      "properties": [
+        {
+          "name": "Pillar Name",
+          "type": "title"
+        },
+        {
+          "name": "Identity Statement",
+          "type": "rich_text"
+        },
+        {
+          "name": "Focus Category",
+          "type": "select"
+        },
+        {
+          "name": "Habits",
+          "type": "relation",
+          "target_db": "Habits"
+        },
+        {
+          "name": "Total Habits",
+          "type": "rollup",
+          "relation_name": "Habits",
+          "rollup_property_name": "Habit Name",
+          "function": "count"
+        }
+      ],
+      "views": [
+        {
+          "name": "Pillars Overview",
+          "type": "gallery"
+        },
+        {
+          "name": "All Pillars",
+          "type": "table",
+          "sorts": [
+            {
+              "property": "Pillar Name",
+              "direction": "ascending"
+            }
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Pillar Name": "Physical Health",
+          "Identity Statement": "I am a high-energy athlete who fuels and moves my body with purpose.",
+          "Focus Category": "Vitality",
+          "Habits": [
+            "Morning Hydration (1L)",
+            "Strength Training"
+          ]
+        },
+        {
+          "Pillar Name": "Mental Resilience",
+          "Identity Statement": "I am calm, mindful, and unreactive to external chaos.",
+          "Focus Category": "Mindset",
+          "Habits": "20-Minute Meditation"
+        },
+        {
+          "Pillar Name": "Deep Work & Mastery",
+          "Identity Statement": "I am a focused craftsperson who creates valuable work without distraction.",
+          "Focus Category": "Career",
+          "Habits": "90-Minute Deep Work Block"
+        },
+        {
+          "Pillar Name": "Intellectual Growth",
+          "Identity Statement": "I am an insatiable lifelong learner expanding my horizon daily.",
+          "Focus Category": "Growth",
+          "Habits": "Evening Reading (20 Pages)"
+        }
+      ]
+    },
+    {
+      "name": "Habits",
+      "properties": [
+        {
+          "name": "Habit Name",
+          "type": "title"
+        },
+        {
+          "name": "Pillar",
+          "type": "relation",
+          "target_db": "Life Areas"
+        },
+        {
+          "name": "Time of Day",
+          "type": "select"
+        },
+        {
+          "name": "Frequency",
+          "type": "select"
+        },
+        {
+          "name": "Target Per Week",
+          "type": "number"
+        },
+        {
+          "name": "Active",
+          "type": "checkbox"
+        },
+        {
+          "name": "Daily Logs",
+          "type": "relation",
+          "target_db": "Daily Logs"
+        },
+        {
+          "name": "Total Check-ins",
+          "type": "rollup",
+          "relation_name": "Daily Logs",
+          "rollup_property_name": "Completed",
+          "function": "checked"
+        }
+      ],
+      "views": [
+        {
+          "name": "Active Habits",
+          "type": "table",
+          "filter": {
+            "property": "Active",
+            "checkbox": {
+              "equals": true
+            }
+          },
+          "sorts": [
+            {
+              "property": "Habit Name",
+              "direction": "ascending"
+            }
+          ]
+        },
+        {
+          "name": "Habits by Time of Day",
+          "type": "board",
+          "group_by_property": "Time of Day"
+        },
+        {
+          "name": "Habit Directory",
+          "type": "list"
+        }
+      ],
+      "sample_rows": [
+        {
+          "Habit Name": "Morning Hydration (1L)",
+          "Pillar": "Physical Health",
+          "Time of Day": "Morning",
+          "Frequency": "Daily",
+          "Target Per Week": 7,
+          "Active": true,
+          "Daily Logs": [
+            "2025-05-12 Morning Hydration",
+            "2025-05-13 Morning Hydration"
+          ]
+        },
+        {
+          "Habit Name": "20-Minute Meditation",
+          "Pillar": "Mental Resilience",
+          "Time of Day": "Morning",
+          "Frequency": "Daily",
+          "Target Per Week": 7,
+          "Active": true,
+          "Daily Logs": "2025-05-12 Meditation"
+        },
+        {
+          "Habit Name": "90-Minute Deep Work Block",
+          "Pillar": "Deep Work & Mastery",
+          "Time of Day": "Afternoon",
+          "Frequency": "Weekdays",
+          "Target Per Week": 5,
+          "Active": true,
+          "Daily Logs": "2025-05-12 Deep Work"
+        },
+        {
+          "Habit Name": "Strength Training",
+          "Pillar": "Physical Health",
+          "Time of Day": "Afternoon",
+          "Frequency": "3x / Week",
+          "Target Per Week": 3,
+          "Active": true,
+          "Daily Logs": "2025-05-13 Strength Session"
+        },
+        {
+          "Habit Name": "Evening Reading (20 Pages)",
+          "Pillar": "Intellectual Growth",
+          "Time of Day": "Evening",
+          "Frequency": "Daily",
+          "Target Per Week": 7,
+          "Active": true,
+          "Daily Logs": "2025-05-12 Evening Reading"
+        }
+      ]
+    },
+    {
+      "name": "Daily Logs",
+      "properties": [
+        {
+          "name": "Log Entry",
+          "type": "title"
+        },
+        {
+          "name": "Date",
+          "type": "date"
+        },
+        {
+          "name": "Habit",
+          "type": "relation",
+          "target_db": "Habits"
+        },
+        {
+          "name": "Completed",
+          "type": "checkbox"
+        },
+        {
+          "name": "Energy Level",
+          "type": "select"
+        },
+        {
+          "name": "Notes",
+          "type": "rich_text"
+        },
+        {
+          "name": "Day of Week",
+          "type": "formula",
+          "expression": "formatDate(prop(\"Date\"), \"dddd\")"
+        }
+      ],
+      "views": [
+        {
+          "name": "Habit Calendar",
+          "type": "calendar",
+          "date_property": "Date"
+        },
+        {
+          "name": "Today's Checklist",
+          "type": "table",
+          "sorts": [
+            {
+              "property": "Date",
+              "direction": "descending"
+            }
+          ]
+        },
+        {
+          "name": "Logs by Energy Level",
+          "type": "board",
+          "group_by_property": "Energy Level"
+        }
+      ],
+      "sample_rows": [
+        {
+          "Log Entry": "2025-05-12 Morning Hydration",
+          "Date": "2025-05-12",
+          "Habit": "Morning Hydration (1L)",
+          "Completed": true,
+          "Energy Level": "High",
+          "Notes": "Drank with electrolyte pinch right after waking."
+        },
+        {
+          "Log Entry": "2025-05-12 Meditation",
+          "Date": "2025-05-12",
+          "Habit": "20-Minute Meditation",
+          "Completed": true,
+          "Energy Level": "Medium",
+          "Notes": "Focused on box breathing; quieted mind."
+        },
+        {
+          "Log Entry": "2025-05-12 Deep Work",
+          "Date": "2025-05-12",
+          "Habit": "90-Minute Deep Work Block",
+          "Completed": true,
+          "Energy Level": "High",
+          "Notes": "Turned phone off, wrote core business architecture."
+        },
+        {
+          "Log Entry": "2025-05-12 Evening Reading",
+          "Date": "2025-05-12",
+          "Habit": "Evening Reading (20 Pages)",
+          "Completed": false,
+          "Energy Level": "Low",
+          "Notes": "Fell asleep early after chapter 1."
+        },
+        {
+          "Log Entry": "2025-05-13 Morning Hydration",
+          "Date": "2025-05-13",
+          "Habit": "Morning Hydration (1L)",
+          "Completed": true,
+          "Energy Level": "High",
+          "Notes": "Felt refreshed instantly."
+        },
+        {
+          "Log Entry": "2025-05-13 Strength Session",
+          "Date": "2025-05-13",
+          "Habit": "Strength Training",
+          "Completed": true,
+          "Energy Level": "High",
+          "Notes": "Chest and back day. Hit personal record on deadlift."
+        }
+      ]
+    },
+    {
+      "name": "Weekly Reviews",
+      "properties": [
+        {
+          "name": "Review Title",
+          "type": "title"
+        },
+        {
+          "name": "Week Range",
+          "type": "date"
+        },
+        {
+          "name": "Consistency Rating",
+          "type": "select"
+        },
+        {
+          "name": "Highlights & Wins",
+          "type": "rich_text"
+        },
+        {
+          "name": "Friction Points",
+          "type": "rich_text"
+        },
+        {
+          "name": "Next Week Adjustment",
+          "type": "rich_text"
+        }
+      ],
+      "views": [
+        {
+          "name": "Review Timeline",
+          "type": "timeline",
+          "date_property": "Week Range"
+        },
+        {
+          "name": "All Weekly Reviews",
+          "type": "table",
+          "sorts": [
+            {
+              "property": "Week Range",
+              "direction": "descending"
+            }
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Review Title": "Week 19 - Momentum Building",
+          "Week Range": "2025-05-05",
+          "Consistency Rating": "Solid (80-89%)",
+          "Highlights & Wins": "Kept meditation steady 6/7 days. Sleep consistency improved.",
+          "Friction Points": "Evening reading skipped due to checking phone in bed.",
+          "Next Week Adjustment": "Leave phone charging in kitchen at 9 PM."
+        },
+        {
+          "Review Title": "Week 20 - Deep Work Breakthrough",
+          "Week Range": "2025-05-12",
+          "Consistency Rating": "Peak (90-100%)",
+          "Highlights & Wins": "Completed all deep work sprints without interruption.",
+          "Friction Points": "Wednesday hydration was delayed till noon.",
+          "Next Week Adjustment": "Fill water carafe the night before on desk."
+        },
+        {
+          "Review Title": "Week 21 - Travel Realignment",
+          "Week Range": "2025-05-19",
+          "Consistency Rating": "Fair (60-79%)",
+          "Highlights & Wins": "Did bodyweight workout inside hotel room.",
+          "Friction Points": "Disrupted routine caused missing evening reading 3 days.",
+          "Next Week Adjustment": "Pack Kindle in carry-on bag."
+        },
+        {
+          "Review Title": "Week 22 - Systematic Consistency",
+          "Week Range": "2025-05-26",
+          "Consistency Rating": "Peak (90-100%)",
+          "Highlights & Wins": "100% adherence on hydration and morning meditation.",
+          "Friction Points": "None encountered; environment was primed.",
+          "Next Week Adjustment": "Increase deep work sprint to 105 minutes."
+        }
+      ]
+    }
+  ],
+  "root_page": {
+    "title": "Atomic Habits OS",
+    "sections": [
+      {
+        "type": "callout",
+        "text": "Welcome to Atomic Habits OS. You do not rise to the level of your goals; you fall to the level of your systems. Use this workspace to transform habits into permanent identity traits."
+      },
+      {
+        "type": "heading_1",
+        "text": "Daily Command Center"
+      },
+      {
+        "type": "paragraph",
+        "text": "Complete your daily habits by ticking the checkmark in Today's Checklist view below. Focus on daily non-negotiables first before taking on flexible items."
+      },
+      {
+        "type": "to_do",
+        "text": "Complete Morning Hydration & Mindfulness"
+      },
+      {
+        "type": "to_do",
+        "text": "Protect primary Deep Work Sprint block"
+      },
+      {
+        "type": "to_do",
+        "text": "Execute evening digital shutdown & review checklist"
+      },
+      {
+        "type": "divider",
+        "text": ""
+      },
+      {
+        "type": "heading_2",
+        "text": "Identity Pillars & Core Systems"
+      },
+      {
+        "type": "quote",
+        "text": "True behavior change is identity change. The goal is not to read a book; the goal is to become a reader."
+      },
+      {
+        "type": "paragraph",
+        "text": "Link each routine to an underlying Life Area. Reinforce identity evidence every time you complete a check-in."
+      },
+      {
+        "type": "heading_2",
+        "text": "Weekly Review Rhythm"
+      },
+      {
+        "type": "bulleted_list",
+        "text": "Reflect every Sunday on habit friction and adherence scores."
+      },
+      {
+        "type": "bulleted_list",
+        "text": "Optimize your environment rather than relying on sheer willpower."
+      },
+      {
+        "type": "bulleted_list",
+        "text": "Never miss twice: if you fail one day, prioritize showing up the next day even for 2 minutes."
+      }
+    ],
+    "sub_pages": [
+      {
+        "title": "How to Use This Template",
+        "sections": [
+          {
+            "type": "heading_1",
+            "text": "Quick Start Guide"
+          },
+          {
+            "type": "paragraph",
+            "text": "This OS follows James Clear's Four Laws of Behavior Change: Make it Obvious, Make it Attractive, Make it Easy, and Make it Satisfying."
+          },
+          {
+            "type": "heading_2",
+            "text": "Step-by-Step Workflow"
+          },
+          {
+            "type": "numbered_list",
+            "text": "Define your Life Areas: Articulate your identity statements in the Life Areas database."
+          },
+          {
+            "type": "numbered_list",
+            "text": "Configure Habits: Add target routines, assign them to a life pillar, and set preferred times of day."
+          },
+          {
+            "type": "numbered_list",
+            "text": "Daily Check-Ins: Each morning or evening, open the Daily Logs view to log completion and rate your energy level."
+          },
+          {
+            "type": "numbered_list",
+            "text": "Weekly Reviews: At the close of each week, run a review to spot recurring friction and adjust your environment."
+          },
+          {
+            "type": "callout",
+            "text": "Pro-tip: Keep your active habits under 5 when starting out. Master consistency before scaling complexity."
+          }
+        ]
+      },
+      {
+        "title": "Habit Stacking & Implementation Playbook",
+        "sections": [
+          {
+            "type": "heading_1",
+            "text": "The Habit Stacking Framework"
+          },
+          {
+            "type": "quote",
+            "text": "After [CURRENT HABIT], I will [NEW HABIT]."
+          },
+          {
+            "type": "heading_2",
+            "text": "Proven Habit Stacks"
+          },
+          {
+            "type": "bulleted_list",
+            "text": "Morning Vitality: After my feet hit the floor, I will drink 1L of water with sea salt."
+          },
+          {
+            "type": "bulleted_list",
+            "text": "Mindful Transition: After I close my laptop for the day, I will write down 3 wins and meditate for 10 minutes."
+          },
+          {
+            "type": "bulleted_list",
+            "text": "Deep Sleep Cue: After I brush my teeth at night, I will place my smartphone across the room and pick up my book."
+          },
+          {
+            "type": "heading_2",
+            "text": "Temptation Bundling"
+          },
+          {
+            "type": "paragraph",
+            "text": "Pair an action you need to do with an action you want to do. Only listen to your favorite podcast while doing cardio or meal prepping."
+          }
+        ]
+      },
+      {
+        "title": "Monthly Analytics & Data Archiving",
+        "sections": [
+          {
+            "type": "heading_1",
+            "text": "Managing Long-Term Consistency"
+          },
+          {
+            "type": "paragraph",
+            "text": "Over time, your Daily Logs database will accumulate hundreds of entries. Keep Notion running smoothly with these archiving tips."
+          },
+          {
+            "type": "heading_2",
+            "text": "End-of-Month Protocol"
+          },
+          {
+            "type": "bulleted_list",
+            "text": "Check Total Check-ins rollup on each habit to inspect completion volume."
+          },
+          {
+            "type": "bulleted_list",
+            "text": "Archive past logs older than 90 days into an Archive database or lock older rows behind date filters."
+          },
+          {
+            "type": "bulleted_list",
+            "text": "Deactivate obsolete habits by unchecking the Active property to remove them from your active views."
+          },
+          {
+            "type": "callout",
+            "text": "Remember: The scorecard is feedback, not self-worth. Iterate on the friction points until consistency becomes frictionless."
+          }
+        ]
+      }
+    ]
+  }
+}

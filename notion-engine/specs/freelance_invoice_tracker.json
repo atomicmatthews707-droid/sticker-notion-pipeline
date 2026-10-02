@@ -1,0 +1,571 @@
+{
+  "template_name": "Ultimate Freelance Invoice & Billing Hub",
+  "databases": [
+    {
+      "name": "Clients",
+      "properties": [
+        {
+          "name": "Client Name",
+          "type": "title"
+        },
+        {
+          "name": "Client Status",
+          "type": "select"
+        },
+        {
+          "name": "Primary Contact",
+          "type": "rich_text"
+        },
+        {
+          "name": "Contact Email",
+          "type": "email"
+        },
+        {
+          "name": "Billing Currency",
+          "type": "select"
+        },
+        {
+          "name": "Default Payment Terms",
+          "type": "select"
+        },
+        {
+          "name": "Projects",
+          "type": "relation",
+          "target_db": "Projects"
+        },
+        {
+          "name": "Invoices",
+          "type": "relation",
+          "target_db": "Invoices"
+        },
+        {
+          "name": "Total Invoiced Revenue",
+          "type": "rollup",
+          "relation_name": "Invoices",
+          "rollup_property_name": "Subtotal",
+          "function": "sum"
+        }
+      ],
+      "views": [
+        {
+          "name": "Active Clients",
+          "type": "table",
+          "filter": {
+            "property": "Client Status",
+            "select": {
+              "equals": "Active"
+            }
+          },
+          "sorts": [
+            {
+              "property": "Client Name",
+              "direction": "ascending"
+            }
+          ]
+        },
+        {
+          "name": "Client Directory by Status",
+          "type": "board",
+          "group_by_property": "Client Status"
+        },
+        {
+          "name": "All Clients",
+          "type": "table",
+          "sorts": [
+            {
+              "property": "Client Name",
+              "direction": "ascending"
+            }
+          ]
+        }
+      ],
+      "sample_rows": [
+        {
+          "Client Name": "Acme Digital Media",
+          "Client Status": "Active",
+          "Primary Contact": "Sarah Jenkins",
+          "Contact Email": "sarah@acmedigital.com",
+          "Billing Currency": "USD",
+          "Default Payment Terms": "Net 30",
+          "Projects": [
+            "Brand Redesign & Guidelines"
+          ],
+          "Invoices": [
+            "INV-2024-001",
+            "INV-2024-004"
+          ]
+        },
+        {
+          "Client Name": "Hyperion SaaS Inc.",
+          "Client Status": "Active",
+          "Primary Contact": "Marcus Vance",
+          "Contact Email": "m.vance@hyperionsaas.io",
+          "Billing Currency": "USD",
+          "Default Payment Terms": "Net 15",
+          "Projects": [
+            "Design System Migration"
+          ],
+          "Invoices": [
+            "INV-2024-002"
+          ]
+        },
+        {
+          "Client Name": "Lumina Studios",
+          "Client Status": "Active",
+          "Primary Contact": "Chloe Laurent",
+          "Contact Email": "accounts@luminastudios.co",
+          "Billing Currency": "EUR",
+          "Default Payment Terms": "Net 30",
+          "Projects": [
+            "Q3 Motion Design Campaign"
+          ],
+          "Invoices": [
+            "INV-2024-003"
+          ]
+        },
+        {
+          "Client Name": "Apex Velocity Labs",
+          "Client Status": "Onboarding",
+          "Primary Contact": "David Kroll",
+          "Contact Email": "dkroll@apexvelocity.net",
+          "Billing Currency": "USD",
+          "Default Payment Terms": "Due Upon Receipt",
+          "Projects": [
+            "Web App UX Audit"
+          ],
+          "Invoices": [
+            "INV-2024-005"
+          ]
+        },
+        {
+          "Client Name": "Nordic Craft Co.",
+          "Client Status": "Former",
+          "Primary Contact": "Astrid Lindholm",
+          "Contact Email": "astrid@nordiccraft.se",
+          "Billing Currency": "EUR",
+          "Default Payment Terms": "Net 30",
+          "Projects": [
+            "E-Commerce Replatforming"
+          ],
+          "Invoices": []
+        }
+      ]
+    },
+    {
+      "name": "Projects",
+      "properties": [
+        {
+          "name": "Project Name",
+          "type": "title"
+        },
+        {
+          "name": "Client",
+          "type": "relation",
+          "target_db": "Clients"
+        },
+        {
+          "name": "Status",
+          "type": "select"
+        },
+        {
+          "name": "Pricing Model",
+          "type": "select"
+        },
+        {
+          "name": "Budget Fee",
+          "type": "number"
+        },
+        {
+          "name": "Start Date",
+          "type": "date"
+        },
+        {
+          "name": "Invoices",
+          "type": "relation",
+          "target_db": "Invoices"
+        },
+        {
+          "name": "Total Invoiced",
+          "type": "rollup",
+          "relation_name": "Invoices",
+          "rollup_property_name": "Subtotal",
+          "function": "sum"
+        }
+      ],
+      "views": [
+        {
+          "name": "Active Projects",
+          "type": "table",
+          "filter": {
+            "property": "Status",
+            "select": {
+              "equals": "In Progress"
+            }
+          },
+          "sorts": [
+            {
+              "property": "Start Date",
+              "direction": "descending"
+            }
+          ]
+        },
+        {
+          "name": "Project Pipeline",
+          "type": "board",
+          "group_by_property": "Status"
+        },
+        {
+          "name": "Budget & Delivery Timeline",
+          "type": "timeline",
+          "date_property": "Start Date"
+        }
+      ],
+      "sample_rows": [
+        {
+          "Project Name": "Brand Redesign & Guidelines",
+          "Client": "Acme Digital Media",
+          "Status": "In Progress",
+          "Pricing Model": "Fixed Fee",
+          "Budget Fee": 8500,
+          "Start Date": "2024-01-10",
+          "Invoices": [
+            "INV-2024-001",
+            "INV-2024-004"
+          ]
+        },
+        {
+          "Project Name": "Design System Migration",
+          "Client": "Hyperion SaaS Inc.",
+          "Status": "In Progress",
+          "Pricing Model": "Hourly",
+          "Budget Fee": 6200,
+          "Start Date": "2024-02-01",
+          "Invoices": [
+            "INV-2024-002"
+          ]
+        },
+        {
+          "Project Name": "Q3 Motion Design Campaign",
+          "Client": "Lumina Studios",
+          "Status": "Completed",
+          "Pricing Model": "Fixed Fee",
+          "Budget Fee": 4300,
+          "Start Date": "2024-03-01",
+          "Invoices": [
+            "INV-2024-003"
+          ]
+        },
+        {
+          "Project Name": "Web App UX Audit",
+          "Client": "Apex Velocity Labs",
+          "Status": "Planning",
+          "Pricing Model": "Fixed Fee",
+          "Budget Fee": 3500,
+          "Start Date": "2024-04-15",
+          "Invoices": [
+            "INV-2024-005"
+          ]
+        },
+        {
+          "Project Name": "E-Commerce Replatforming",
+          "Client": "Nordic Craft Co.",
+          "Status": "Completed",
+          "Pricing Model": "Retainer",
+          "Budget Fee": 12000,
+          "Start Date": "2023-09-01",
+          "Invoices": []
+        }
+      ]
+    },
+    {
+      "name": "Invoices",
+      "properties": [
+        {
+          "name": "Invoice Number",
+          "type": "title"
+        },
+        {
+          "name": "Client",
+          "type": "relation",
+          "target_db": "Clients"
+        },
+        {
+          "name": "Project",
+          "type": "relation",
+          "target_db": "Projects"
+        },
+        {
+          "name": "Status",
+          "type": "select"
+        },
+        {
+          "name": "Issue Date",
+          "type": "date"
+        },
+        {
+          "name": "Due Date",
+          "type": "date"
+        },
+        {
+          "name": "Subtotal",
+          "type": "number"
+        },
+        {
+          "name": "Tax Rate Percent",
+          "type": "number"
+        },
+        {
+          "name": "Total Due",
+          "type": "formula",
+          "expression": "prop(\"Subtotal\") * (1 + (prop(\"Tax Rate Percent\") / 100))"
+        },
+        {
+          "name": "Payment Method",
+          "type": "select"
+        },
+        {
+          "name": "Days Overdue",
+          "type": "formula",
+          "expression": "if(prop(\"Status\") == \"Paid\" or empty(prop(\"Due Date\")), 0, if(now() > prop(\"Due Date\"), dateBetween(now(), prop(\"Due Date\"), \"days\"), 0))"
+        },
+        {
+          "name": "Notes",
+          "type": "rich_text"
+        }
+      ],
+      "views": [
+        {
+          "name": "Invoice Pipeline",
+          "type": "board",
+          "group_by_property": "Status"
+        },
+        {
+          "name": "All Invoices (Ledger)",
+          "type": "table",
+          "sorts": [
+            {
+              "property": "Issue Date",
+              "direction": "descending"
+            }
+          ]
+        },
+        {
+          "name": "Payment Calendar",
+          "type": "calendar",
+          "date_property": "Due Date"
+        }
+      ],
+      "sample_rows": [
+        {
+          "Invoice Number": "INV-2024-001",
+          "Client": "Acme Digital Media",
+          "Project": "Brand Redesign & Guidelines",
+          "Status": "Paid",
+          "Issue Date": "2024-01-15",
+          "Due Date": "2024-02-14",
+          "Subtotal": 4250,
+          "Tax Rate Percent": 10,
+          "Payment Method": "Bank Transfer",
+          "Notes": "50% upfront deposit for brand overhaul project."
+        },
+        {
+          "Invoice Number": "INV-2024-002",
+          "Client": "Hyperion SaaS Inc.",
+          "Project": "Design System Migration",
+          "Status": "Sent",
+          "Issue Date": "2024-03-01",
+          "Due Date": "2024-03-16",
+          "Subtotal": 3100,
+          "Tax Rate Percent": 0,
+          "Payment Method": "Wise",
+          "Notes": "Sprint 1 design tokens and component audit."
+        },
+        {
+          "Invoice Number": "INV-2024-003",
+          "Client": "Lumina Studios",
+          "Project": "Q3 Motion Design Campaign",
+          "Status": "Overdue",
+          "Issue Date": "2024-02-01",
+          "Due Date": "2024-03-02",
+          "Subtotal": 4300,
+          "Tax Rate Percent": 20,
+          "Payment Method": "Stripe",
+          "Notes": "Followed up on March 5 via accounts email."
+        },
+        {
+          "Invoice Number": "INV-2024-004",
+          "Client": "Acme Digital Media",
+          "Project": "Brand Redesign & Guidelines",
+          "Status": "Draft",
+          "Issue Date": "2024-03-20",
+          "Due Date": "2024-04-19",
+          "Subtotal": 4250,
+          "Tax Rate Percent": 10,
+          "Payment Method": "Bank Transfer",
+          "Notes": "Final milestone balance pending asset handoff."
+        },
+        {
+          "Invoice Number": "INV-2024-005",
+          "Client": "Apex Velocity Labs",
+          "Project": "Web App UX Audit",
+          "Status": "Sent",
+          "Issue Date": "2024-03-10",
+          "Due Date": "2024-03-10",
+          "Subtotal": 3500,
+          "Tax Rate Percent": 0,
+          "Payment Method": "Direct Deposit",
+          "Notes": "Payment due upon receipt prior to audit kickoff."
+        }
+      ]
+    }
+  ],
+  "root_page": {
+    "title": "Freelance Invoice Tracker & Revenue OS",
+    "sections": [
+      {
+        "type": "callout",
+        "text": "Welcome to your Freelance Invoicing command center. Monitor pending accounts, track billable project revenue, and eliminate unpaid overdue invoices."
+      },
+      {
+        "type": "heading_1",
+        "text": "Cash Flow Snapshot"
+      },
+      {
+        "type": "paragraph",
+        "text": "Review active invoice pipelines, check overdue balances, and monitor your monthly collections across clients."
+      },
+      {
+        "type": "divider",
+        "text": ""
+      },
+      {
+        "type": "heading_2",
+        "text": "Active Invoicing Pipeline"
+      },
+      {
+        "type": "paragraph",
+        "text": "Drag and drop invoices across stages from Draft to Sent, Paid, or Overdue to keep your accounts receivable current."
+      },
+      {
+        "type": "heading_2",
+        "text": "Clients & Projects Portfolio"
+      },
+      {
+        "type": "paragraph",
+        "text": "Review client health, payment terms, and project contract caps linked directly to cumulative billed revenue."
+      },
+      {
+        "type": "divider",
+        "text": ""
+      },
+      {
+        "type": "heading_3",
+        "text": "Quick Workflow Checklist"
+      },
+      {
+        "type": "to_do",
+        "text": "Check bank transfers against Sent invoices every Friday"
+      },
+      {
+        "type": "to_do",
+        "text": "Send automated polite reminder for invoices > 3 days overdue"
+      },
+      {
+        "type": "to_do",
+        "text": "Export quarterly earnings report for tax estimation"
+      }
+    ]
+  },
+  "sub_pages": [
+    {
+      "title": "How to Use This Tracker",
+      "sections": [
+        {
+          "type": "heading_1",
+          "text": "System Setup & Workflow Guide"
+        },
+        {
+          "type": "paragraph",
+          "text": "Follow these steps to customize the billing hub to match your freelance business model."
+        },
+        {
+          "type": "heading_2",
+          "text": "1. Set Up Your Clients"
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Add each client with their preferred billing currency, billing contact email, and standard payment terms (e.g., Net 15, Net 30)."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "The Total Invoiced Revenue rollup automatically calculates client lifetime value based on linked invoices."
+        },
+        {
+          "type": "heading_2",
+          "text": "2. Log Projects and Scope"
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Assign projects to clients and designate pricing structures: Fixed Fee, Retainer, or Hourly."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Compare your Project Budget Fee with the Total Invoiced rollup to prevent scope creep."
+        },
+        {
+          "type": "heading_2",
+          "text": "3. Issue and Track Invoices"
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Create invoices with pre-formatted invoice IDs (e.g., INV-2024-001)."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "Set Subtotal and Tax Rate Percent; Total Due calculates automatically."
+        },
+        {
+          "type": "bulleted_list",
+          "text": "When Due Date passes without being marked Paid, Days Overdue computes the delinquency age."
+        }
+      ]
+    },
+    {
+      "title": "Invoice Payment Terms & Templates",
+      "sections": [
+        {
+          "type": "heading_1",
+          "text": "Standard Payment Terms Reference"
+        },
+        {
+          "type": "callout",
+          "text": "Standardize your payment clauses across all client agreements to safeguard your cash flow."
+        },
+        {
+          "type": "heading_2",
+          "text": "Payment Term Definitions"
+        },
+        {
+          "type": "numbered_list",
+          "text": "Due Upon Receipt: Payment expected within 24-48 business hours of receipt. Recommended for upfront deposits and new clients."
+        },
+        {
+          "type": "numbered_list",
+          "text": "Net 15: Payment required within 15 calendar days from the invoice issue date. Ideal for agile, sprint-based contracts."
+        },
+        {
+          "type": "numbered_list",
+          "text": "Net 30: Standard enterprise term requiring payment within 30 calendar days."
+        },
+        {
+          "type": "heading_2",
+          "text": "Late Payment Email Script"
+        },
+        {
+          "type": "quote",
+          "text": "Hi [Client Name], I hope you are having a productive week. This is a gentle reminder that invoice [Invoice Number] for [Project Name] was due on [Due Date]. Please let me know if you need another copy of the invoice or help with payment details. Thanks, [Your Name]"
+        }
+      ]
+    }
+  ]
+}

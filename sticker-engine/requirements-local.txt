@@ -1,0 +1,12 @@
+# Just what Sticker Studio needs on your own computer.
+nicegui>=3.0
+google-genai==2.26.0
+httpx>=0.27.0
+pillow>=10.4.0
+numpy>=1.26
+imagehash>=4.3.1
+scipy>=1.11
+pyyaml>=6.0
+jinja2>=3.1.4
+reportlab>=4.2.0
+python-dotenv>=1.0.0

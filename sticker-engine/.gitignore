@@ -1,6 +1,15 @@
 *.pyc
-__pycache__
+__pycache__/
+.pytest_cache/
 .env
 *.db
+*.db-wal
+*.db-shm
+output/
+data/
+*.zip
 /assets/mockups/*
 !/assets/mockups/.gitkeep
+ui_settings.json
+*.tmp
+.venv/

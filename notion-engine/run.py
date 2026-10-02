@@ -1,93 +1,137 @@
-import os
-import sys
-import json
 import argparse
-from datetime import datetime
+import csv
+import json
+import os
+import re
+import sys
+
 from dotenv import load_dotenv
 
-from engine.spec_generator import generate_spec
-from engine.notion_builder import build_template
-from engine.listing_writer import generate_listing
 from engine.cover_art import generate_cover_prompts
+from engine.listing_writer import generate_listing
+from engine.notion_builder import build_template
+from engine.spec_generator import _validate_spec, generate_spec
 
-def process_niche(niche: str, dry_run: bool):
-    # AI Handoff: The main execution pipeline.
+CATALOG_FIELDS = ["Niche", "Slug", "Status", "Notion URL", "Skipped", "Error"]
+
+
+def slugify(niche: str) -> str:
+    """Filesystem-safe slug; never contains path separators or dots."""
+    slug = re.sub(r"[^a-z0-9]+", "_", niche.lower()).strip("_")
+    return slug or "niche"
+
+
+def _write(path: str, text: str) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def _append_catalog(row: dict) -> None:
+    path = os.path.join("output", "catalog.csv")
+    new_file = not os.path.exists(path)
+    with open(path, "a", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CATALOG_FIELDS)
+        if new_file:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def load_spec(path: str) -> dict:
+    """Load a hand-edited spec file and validate it exactly like a generated one."""
+    with open(path, "r", encoding="utf-8") as f:
+        spec = json.load(f)
+    errors = _validate_spec(spec)
+    if errors:
+        raise ValueError(f"Spec {path} is invalid:\n- " + "\n- ".join(errors))
+    return spec
+
+
+def process_niche(niche: str, dry_run: bool, spec_path: str | None = None) -> dict:
+    """Run the full pipeline for one niche. Raises on failure; the caller isolates it."""
     print(f"\nProcessing niche: {niche}")
-    slug = niche.lower().replace(" ", "_").replace("-", "_")
+    slug = slugify(niche)
     out_dir = os.path.join("output", slug)
     os.makedirs(out_dir, exist_ok=True)
-    
-    print("1. Generating spec...")
-    spec = generate_spec(niche, dry_run=dry_run)
-    with open(os.path.join(out_dir, "spec.json"), "w", encoding="utf-8") as f:
-        json.dump(spec, f, indent=2)
-        
+
+    if spec_path:
+        print(f"1. Loading spec from {spec_path} (no AI, deterministic)...")
+        spec = load_spec(spec_path)
+    else:
+        print("1. Generating spec...")
+        spec = generate_spec(niche, dry_run=dry_run)
+    _write(os.path.join(out_dir, "spec.json"), json.dumps(spec, indent=2))
+
     print("2. Generating listing...")
-    listing = generate_listing(spec, dry_run=dry_run)
-    with open(os.path.join(out_dir, "listing.md"), "w", encoding="utf-8") as f:
-        f.write(listing)
-        
+    _write(os.path.join(out_dir, "listing.md"), generate_listing(spec, dry_run=dry_run))
+
     print("3. Generating cover prompts...")
-    prompts = generate_cover_prompts(spec, dry_run=dry_run)
-    with open(os.path.join(out_dir, "cover_prompts.txt"), "w", encoding="utf-8") as f:
-        f.write(prompts)
-        
+    _write(os.path.join(out_dir, "cover_prompts.txt"), generate_cover_prompts(spec, dry_run=dry_run))
+
+    skipped: list = []
+    root_url = ""
     if dry_run:
         print("Dry run enabled. Skipping Notion API calls.")
-        print(f"Generated Spec:\n{json.dumps(spec, indent=2)}")
-        skipped = []
     else:
         print("4. Building in Notion...")
-        token = os.getenv("NOTION_TOKEN")
+        token = os.getenv("NOTION_TOKEN") or "proxy-managed"
         parent_id = os.getenv("NOTION_PARENT_PAGE_ID")
-        if not token or not parent_id:
-            raise ValueError("Missing NOTION_TOKEN or NOTION_PARENT_PAGE_ID in environment.")
-            
+        if not parent_id:
+            raise ValueError("Missing NOTION_PARENT_PAGE_ID in environment.")
         result = build_template(spec, token, parent_id)
         skipped = result.get("skipped", [])
-        
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        with open(os.path.join(out_dir, f"skipped_{timestamp}.json"), "w", encoding="utf-8") as f:
-            json.dump(skipped, f, indent=2)
-            
-        print(f"Success! Root URL: {result.get('root_url')}")
-    
-    # Append to catalog
-    catalog_path = os.path.join("output", "catalog.csv")
-    file_exists = os.path.exists(catalog_path)
-    with open(catalog_path, "a", encoding="utf-8") as f:
-        if not file_exists:
-            f.write("Niche,Slug,Status\n")
-        f.write(f"{niche},{slug},Success\n")
-        
-    if skipped:
-        print(f"Warning: {len(skipped)} items skipped. Check skipped.json in output dir.")
+        root_url = result.get("root_url", "")
+        _write(os.path.join(out_dir, "skipped.json"), json.dumps(skipped, indent=2))
+        _write(os.path.join(out_dir, "result.json"), json.dumps(result, indent=2))
+        _write(os.path.join(out_dir, "notion_url.txt"), root_url)
+        print(f"Success! Root URL: {root_url}")
 
-def main():
+    if skipped:
+        print(f"Warning: {len(skipped)} items skipped. See {os.path.join(out_dir, 'skipped.json')}.")
+    return {"slug": slug, "root_url": root_url, "skipped": skipped}
+
+
+def main() -> int:
     parser = argparse.ArgumentParser(description="Notion Template Engine")
     parser.add_argument("--niche", type=str, help="Single niche to process")
     parser.add_argument("--niches-file", type=str, help="Path to text file containing niches (one per line)")
-    parser.add_argument("--dry-run", action="store_true", help="Skip Notion API and just print/save generated specs")
+    parser.add_argument("--spec", type=str, help="Build from this spec JSON file instead of generating one (deterministic)")
+    parser.add_argument("--dry-run", action="store_true", help="Skip Notion API and just save generated specs")
     args = parser.parse_args()
 
-    # .env not required in dry-run mode
-    if not args.dry_run:
-        load_dotenv()
+    load_dotenv()
 
     niches = []
     if args.niche:
         niches.append(args.niche)
     if args.niches_file:
         with open(args.niches_file, "r", encoding="utf-8") as f:
-            lines = [l.strip() for l in f if l.strip()]
-            niches.extend(lines)
-            
+            niches.extend(line.strip() for line in f if line.strip())
+
+    if args.spec:
+        label = os.path.splitext(os.path.basename(args.spec))[0]
+        niches = [args.niche or label]
     if not niches:
-        print("Error: Must provide --niche or --niches-file")
-        sys.exit(1)
-        
+        print("Error: Must provide --niche, --niches-file or --spec")
+        return 1
+
+    os.makedirs("output", exist_ok=True)
+    failures = 0
     for niche in niches:
-        process_niche(niche, args.dry_run)
+        try:
+            res = process_niche(niche, args.dry_run, args.spec)
+            _append_catalog({
+                "Niche": niche, "Slug": res["slug"], "Status": "Success" if not res["skipped"] else "Partial",
+                "Notion URL": res["root_url"], "Skipped": len(res["skipped"]), "Error": "",
+            })
+        except Exception as e:  # one bad niche must not abort the batch
+            failures += 1
+            print(f"FAILED: {niche}: {type(e).__name__}: {e}")
+            _append_catalog({
+                "Niche": niche, "Slug": slugify(niche), "Status": "Failed",
+                "Notion URL": "", "Skipped": 0, "Error": f"{type(e).__name__}: {e}",
+            })
+    return 1 if failures else 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

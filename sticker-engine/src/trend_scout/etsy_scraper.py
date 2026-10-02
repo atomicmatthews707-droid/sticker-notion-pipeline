@@ -13,7 +13,6 @@ import os
 import time
 import random
 import logging
-from typing import Optional
 
 import httpx
 from selectolax.parser import HTMLParser
@@ -113,7 +112,6 @@ def _scan_via_scrape(proxy_url: str) -> list[NicheSignal]:
     Rate-limited to 1 req/2 sec. Proxy-aware via SCRAPER_PROXY_URL.
     """
     signals: list[NicheSignal] = []
-    proxies = {"http://": proxy_url, "https://": proxy_url} if proxy_url else None
 
     for query in _SEARCH_QUERIES:
         try:
@@ -125,7 +123,7 @@ def _scan_via_scrape(proxy_url: str) -> list[NicheSignal]:
             resp = httpx.get(
                 url,
                 headers={"User-Agent": ua},
-                proxies=proxies,
+                proxy=proxy_url or None,
                 timeout=15.0,
                 follow_redirects=True,
             )

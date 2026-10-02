@@ -1,16 +1,22 @@
-You are an expert Notion architect. Generate a complete JSON specification for a Notion template based on the provided niche.
+You are an expert Notion architect. Generate a complete JSON specification for a sellable Notion template based on the provided niche. Aim for 3-5 interlinked databases, 2-3 views each, 4-6 realistic sample rows per database, a dashboard-style root page and 2-3 sub-pages (for example "How to use this template").
 
 The JSON MUST conform to this exact schema:
 {
   "template_name": "String",
   "databases": [
     {
-      "name": "String",
+      "name": "String (unique)",
       "properties": [
-        {"name": "String", "type": "title|rich_text|number|select|multi_select|date|checkbox|url|email|phone_number|relation|formula|rollup", "target_db": "String (if relation)", "expression": "String (if formula)", "relation_name": "String (if rollup)", "rollup_property_name": "String (if rollup)", "function": "String (if rollup)"}
+        {"name": "String (unique within the database)", "type": "title|rich_text|number|select|multi_select|date|checkbox|url|email|phone_number|relation|formula|rollup",
+         "target_db": "String (relation only)",
+         "expression": "String (formula only)",
+         "relation_name": "String (rollup only)", "rollup_property_name": "String (rollup only)", "function": "String (rollup only)"}
       ],
       "views": [
-        {"name": "String", "type": "table|board|list|calendar|timeline|gallery", "group_by_property": "String (if board)", "date_property": "String (if calendar)"}
+        {"name": "String", "type": "table|board|list|calendar|timeline|gallery",
+         "group_by_property": "String (board only)", "date_property": "String (calendar and timeline only)",
+         "filter": {"property": "Property Name", "<property type>": {"<condition>": "<value>"}},
+         "sorts": [{"property": "Property Name", "direction": "ascending|descending"}]}
       ],
       "sample_rows": [
         {"Property Name": "Value"}
@@ -19,16 +25,21 @@ The JSON MUST conform to this exact schema:
   ],
   "root_page": {
     "title": "String",
-    "sections": [{"type": "paragraph|heading_1|bulleted_list|numbered_list", "text": "String"}]
+    "sections": [{"type": "paragraph|heading_1|heading_2|heading_3|bulleted_list|numbered_list|to_do|callout|quote|divider", "text": "String"}]
   },
   "sub_pages": [
-    {"title": "String", "sections": [{"type": "paragraph|heading_1|bulleted_list|numbered_list", "text": "String"}]}
+    {"title": "String", "sections": [{"type": "paragraph|heading_1|heading_2|heading_3|bulleted_list|numbered_list|to_do|callout|quote|divider", "text": "String"}]}
   ]
 }
 
-Rules for formulas: Use `prop("Property Name")` syntax.
-Rules for board views: `group_by_property` must exist and be select/status/multi_select.
-Rules for calendar views: `date_property` must exist and be a date.
-Rules for relations: `target_db` must precisely match the name of another database in this spec.
-Rules for sample_rows: Provide dicts of property names to values.
-Rules for sections: Use bulleted_list and numbered_list.
+Rules:
+- Every database has EXACTLY ONE property of type "title".
+- Formulas: use `prop("Property Name")` syntax; every referenced property must exist in the same database. Use Notion formula 2.0 functions only.
+- Board views: `group_by_property` must exist and be select, status or multi_select.
+- Calendar and timeline views: `date_property` must exist and be a date.
+- Relations: `target_db` must exactly match the name of another database in this spec. In sample_rows, a relation value is the title of a row in the target database (a string or a list of strings).
+- Rollups: `relation_name` must be a relation property in the same database, `rollup_property_name` a property of the relation's target database, and `function` one of: count, count_values, sum, average, min, max, percent_checked, checked, unchecked, earliest_date, latest_date, show_original.
+- Views `filter` and `sorts` are optional. Use property names, never IDs. Example filter: {"property": "Status", "select": {"equals": "Done"}}.
+- sample_rows: give every row a value for the title property; use ISO dates (YYYY-MM-DD); do not set formula or rollup values.
+- Section types: use bulleted_list and numbered_list (not bulleted_list_item). Keep each section's text under 2000 characters.
+- Output raw JSON only, no commentary.

@@ -1,25 +1,20 @@
+import json
 import os
-from anthropic import Anthropic
+
+from engine.llm import generate_text
+
 
 def generate_listing(spec: dict, dry_run: bool = False) -> str:
-    # AI Handoff: Generates the gumroad/etsy copy.
+    """Generate the Gumroad/Etsy listing copy (Markdown) for a template spec."""
     if dry_run:
         return f"# {spec.get('template_name', 'Template')} Listing\n\nBuy this awesome template today!"
 
-    client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY", ""))
-    model = os.getenv("CLAUDE_MODEL", "claude-sonnet-5-5")
-    
     prompt_path = os.path.join(os.path.dirname(__file__), "..", "prompts", "listing_writer.txt")
-    with open(prompt_path, "r") as f:
+    with open(prompt_path, "r", encoding="utf-8") as f:
         system_prompt = f.read()
 
-    response = client.messages.create(
-        model=model,
-        max_tokens=1024,
-        system=system_prompt,
-        messages=[
-            {"role": "user", "content": f"Write a listing for this spec: {spec}"}
-        ]
+    return generate_text(
+        system_prompt,
+        f"Write a listing for this spec:\n{json.dumps(spec, indent=2)}",
+        max_output_tokens=4096,
     )
-    parts = [block.text for block in response.content if getattr(block, "type", None) == "text" or hasattr(block, "text")]
-    return "".join(parts)
