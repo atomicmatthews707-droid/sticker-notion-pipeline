@@ -63,6 +63,12 @@ the pipeline per style: `cutout: floodfill|rembg|none`, `background: white|none`
 `guard: strict|basic`, `aspect: 1:1|3:4|4:3|9:16|16:9`. Die-cut sticker styles use white background plus cutout;
 full-frame styles (photos, signs) set them to `none`.
 
+**The screen.** Dark glass layout: Global style and Prompt on the left (Optimize rewrites your prompt, with Undo); Progress,
+Preview and the Keep & build panel on the right. Drag stickers from Preview into Keep & build (or press +). Export and
+Build pack use exactly what you kept; with nothing kept they use every sticker that passed. The bar under Preview switches
+between Cutout/Original and White, Dark, Colour, Black / White (shown in greyscale) and Transparent. The header keeps a
+running tally: packs made, stickers made, cost this run, and spent today.
+
 **How a run works.** Write a brief, set three numbers (stickers in each pack, versions of each sticker, number of packs),
 press "Write the ideas": the text AI writes more ideas than needed, critiques them, and the best are kept, ranked, and
 shown for you to edit before any image is paid for. Then "Create stickers" draws them, one pack at a time.

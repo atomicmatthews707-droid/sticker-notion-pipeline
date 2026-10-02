@@ -40,6 +40,7 @@ class JobRunner:
         self.niche_id: Optional[int] = None
         self.outcome: Optional[str] = None
         self.lock = threading.Lock()
+        self.session_niches: list[int] = []     # every pack made since the program started, for the header tally
 
     @property
     def running(self) -> bool:
@@ -96,15 +97,22 @@ class JobRunner:
             self._thread.start()
             return first
 
-    @staticmethod
-    def _new_niche(title: str, prompts: list[str], options: dict) -> int:
+    def _new_niche(self, title: str, prompts: list[str], options: dict) -> int:
         suffix = ""
         for n in range(1, 50):
             try:
-                return db.queue_request(f"{title}{suffix}", subjects=prompts, count=len(prompts), options=options)
+                niche_id = db.queue_request(f"{title}{suffix}", subjects=prompts, count=len(prompts), options=options)
+                self.session_niches.append(niche_id)
+                return niche_id
             except ValueError:
                 suffix = f" ({n + 1})"
         raise CannotStart("Could not create the run.")
+
+    def stats(self) -> dict:
+        """What the header shows: packs made, individual stickers generated, and money spent, since the program started."""
+        images = sum(1 for n in self.session_niches for r in db.get_images_for_niche(n, kept=None) if r["image_path"])
+        spent = sum(db.get_niche_spend(n) for n in self.session_niches)
+        return {"packs": len(self.session_niches), "images": images, "spent": spent}
 
     def _run_queue(self, first_id: int, titles: list[str], packs: list[list[str]], options: dict) -> None:
         for i, (title, prompts) in enumerate(zip(titles, packs)):
@@ -157,17 +165,24 @@ class JobRunner:
             cancel.request()
             self.say("Stop requested. Finishing the image in progress, then stopping. Nothing already made is lost.")
 
-    def build_pack(self, niche_id: int) -> None:
-        """Turn a reviewed run into the Etsy/Gumroad pack (sheet, PDF, zip, listing text)."""
+    def build_pack(self, niche_id: int, image_ids: Optional[list] = None) -> None:
+        """Turn a reviewed run into the Etsy/Gumroad pack (sheet, PDF, zip, listing text). image_ids: only these stickers."""
         with self.lock:
             if self.running:
                 raise CannotStart("A run is already in progress.")
             niche = db.get_niche(niche_id)
-            if not niche or not db.get_images_for_niche(niche_id, kept=True):
+            if not niche:
+                raise CannotStart("No run selected.")
+            if image_ids:
+                own = {r["id"] for r in db.get_images_for_niche(niche_id, kept=None) if r["image_path"]}
+                image_ids = [i for i in image_ids if i in own]
+                if not image_ids:
+                    raise CannotStart("None of the stickers in the Keep panel belong to this run.")
+            elif not db.get_images_for_niche(niche_id, kept=True):
                 raise CannotStart("There are no passed or unchecked stickers in this run to build a pack from.")
-            db.update_niche_options(niche_id, build_pack=True)
+            db.update_niche_options(niche_id, build_pack=True, only_image_ids=image_ids or None)
             self.niche_id, self.outcome = niche_id, None
-            self.say("Building the pack from the stickers that passed.")
+            self.say(f"Building the pack from {'the %d stickers you kept' % len(image_ids) if image_ids else 'the stickers that passed'}.")
             self._thread = threading.Thread(target=self._run, args=(niche_id, niche["name"], "PACKAGING"), daemon=True, name="sticker-pack")
             self._thread.start()
 

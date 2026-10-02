@@ -6,7 +6,7 @@ Export a finished run as files you can hand to someone.
   jpeg       a zip of full-size JPEG stickers on white
 
 Goodnotes' own .goodnotes file type is private and cannot be written reliably, so the PDF is used instead.
-Only stickers that passed (or were not checked) are exported; low-scoring and duplicate ones are left out.
+With a keep list, exactly those stickers are exported; otherwise only stickers that passed (or were not checked).
 """
 
 import io
@@ -39,8 +39,12 @@ def _slug(text: str, fallback: str = "stickers") -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or fallback
 
 
-def exportable_paths(niche_id: int) -> list[str]:
+def exportable_paths(niche_id: int, image_ids: Optional[list] = None) -> list[str]:
+    """Pictures to export. With a keep list: exactly those, in that order (you chose them). Otherwise all that passed."""
     items = gallery.gallery_items(niche_id)
+    if image_ids:
+        by_id = {i["id"]: i for i in items if i["path"]}
+        return [by_id[i]["path"] for i in image_ids if i in by_id]
     return [i["path"] for i in items if i["state"] in EXPORTABLE and i["path"]]
 
 
@@ -51,13 +55,14 @@ def _on_white(path: str) -> Image.Image:
     return backdrop
 
 
-def export_run(niche_id: int, fmt: str = DEFAULT_FORMAT, name: str = "stickers", out_dir: Optional[Path] = None) -> Path:
+def export_run(niche_id: int, fmt: str = DEFAULT_FORMAT, name: str = "stickers", out_dir: Optional[Path] = None,
+               image_ids: Optional[list] = None) -> Path:
     """Write the export next to the run's other files and return its path."""
     if fmt not in FORMATS:
         raise ValueError(f"Unknown export format {fmt!r}.")
-    paths = exportable_paths(niche_id)
+    paths = exportable_paths(niche_id, image_ids)
     if not paths:
-        raise NothingToExport("There are no passed or unchecked stickers in this run to export.")
+        raise NothingToExport("Nothing to export: drag stickers into the Keep panel, or wait for some to pass.")
     out_dir = out_dir or config.output_dir() / f"niche_{niche_id}" / "export"
     out_dir.mkdir(parents=True, exist_ok=True)
     base = _slug(name)

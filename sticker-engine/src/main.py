@@ -87,7 +87,7 @@ def _options(niche_id: int) -> dict:
         "variants": max(1, int(o.get("variants", 1))), "references": o.get("references") or [],
         "reference_mode": o.get("reference_mode", "style"), "apply_style": bool(o.get("apply_style", True)),
         "verbatim": bool(o.get("verbatim", False)), "qa": bool(o.get("qa", True)), "build_pack": bool(o.get("build_pack", True)),
-        "style_md": o.get("style_md"),
+        "style_md": o.get("style_md"), "only_image_ids": o.get("only_image_ids") or None,
     }
 
 
@@ -168,6 +168,15 @@ def _pack_dir(niche_id: int):
     return config.output_dir() / f"niche_{niche_id}" / "pack"
 
 
+def _chosen_images(niche_id: int) -> list[dict]:
+    """The stickers that go into the pack: the ones you dragged into Keep if you did, otherwise every kept one."""
+    only = _options(niche_id)["only_image_ids"]
+    kept = db.get_images_for_niche(niche_id, kept=True)
+    if only:
+        return [i for i in db.get_images_for_niche(niche_id, kept=None) if i["id"] in set(only)]
+    return kept
+
+
 def _stage_package(niche_id: int, niche_name: str) -> None:
     """PACKAGING: sheet layout -> mockups -> zip bundle (with the Goodnotes PDF)."""
     from src.packaging.bundler import bundle
@@ -178,7 +187,7 @@ def _stage_package(niche_id: int, niche_name: str) -> None:
     if existing and existing.get("zip_path") and os.path.exists(existing["zip_path"]):
         return  # packaged before a crash; the kept images cannot change after filtering
     out_dir = _pack_dir(niche_id)
-    image_paths = [i["image_path"] for i in db.get_images_for_niche(niche_id, kept=True)]
+    image_paths = [i["image_path"] for i in _chosen_images(niche_id)]
     sheet_path, _preview = create_sheet(image_paths, out_dir)
     mockups = create_mockups(sheet_path, image_paths, niche_name, out_dir)
     zip_path = bundle(niche_name, image_paths, sheet_path, mockups, out_dir)
@@ -188,7 +197,7 @@ def _stage_package(niche_id: int, niche_name: str) -> None:
 
 def _sample_subjects(niche_id: int) -> list[str]:
     """Subjects of the stickers that are IN the pack. Rejected stickers must never appear in the listing."""
-    return [i["prompt"].split(",")[0] for i in db.get_images_for_niche(niche_id, kept=True)][:8]
+    return [i["prompt"].split(",")[0] for i in _chosen_images(niche_id)][:8]
 
 
 def _stage_list(niche_id: int, niche_name: str) -> None:
@@ -209,7 +218,7 @@ def _stage_list(niche_id: int, niche_name: str) -> None:
     if listing_file.exists():
         listing = json.loads(listing_file.read_text(encoding="utf-8"))  # reuse: copy is generated (and paid for) once
     else:
-        image_paths = [i["image_path"] for i in db.get_images_for_niche(niche_id, kept=True)]
+        image_paths = [i["image_path"] for i in _chosen_images(niche_id)]
         listing = write_listing(
             niche_name, image_paths, sample_subjects=_sample_subjects(niche_id),
             brief=(db.get_niche(niche_id) or {}).get("brief") or "", niche_id=niche_id,

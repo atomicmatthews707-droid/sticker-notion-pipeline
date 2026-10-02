@@ -188,7 +188,7 @@ def test_the_pipeline_has_no_best_of_n_culling_step():
 def test_options_default_safely():
     nid = db.queue_request("plain")
     assert main._options(nid) == {"variants": 1, "references": [], "reference_mode": "style", "apply_style": True,
-                                  "verbatim": False, "qa": True, "build_pack": True, "style_md": None}
+                                  "verbatim": False, "qa": True, "build_pack": True, "style_md": None, "only_image_ids": None}
 
 
 def test_quality_check_can_be_skipped_and_everything_is_kept(monkeypatch, tmp_path):

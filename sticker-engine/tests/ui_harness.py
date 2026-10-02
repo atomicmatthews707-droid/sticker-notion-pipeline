@@ -43,6 +43,9 @@ JOKES = ["skeleton waiting for a date that never came", "ghost who is tired of t
 
 def fake_json(self, prompt, system=None, max_attempts=2):
     import re
+    if prompt.startswith("Brief to improve"):
+        return {"prompt": "Halloween stickers for adults: dry, sarcastic one-liners and cheeky spoofs of famous horror tropes, "
+                          "mixing badge, sign and caption-only formats, with short bold words that are easy to read."}
     n = int(re.search(r"Write (\d+) candidate", prompt).group(1))
     offset = 0 if "pack 2 of" not in prompt else 6
     return {"ideas": [{"text": f'"{JOKES[(offset + i) % len(JOKES)].upper()}" with a bold graphic', "weakness": "a bit obvious",
