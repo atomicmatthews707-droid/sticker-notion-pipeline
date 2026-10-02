@@ -75,6 +75,10 @@ _SCHEMA = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, model TEXT, tokens_in INTEGER, tokens_out INTEGER,
         images_count INTEGER, cost_usd REAL, niche_id INTEGER,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)""",
+    """CREATE TABLE IF NOT EXISTS idea_feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, style_key TEXT, idea TEXT, liked INTEGER, ai_score REAL,
+        ai_chosen INTEGER, brief TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(style_key, idea))""",
 ]
 
 
@@ -421,6 +425,50 @@ def get_total_spend() -> float:
     conn = _conn()
     try:
         return float(conn.execute("SELECT COALESCE(SUM(cost_usd), 0.0) FROM spend_log").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def save_idea_feedback(style_key: str, rows: list[dict], brief: str = "") -> int:
+    """
+    Remember which ideas you marked as the best (liked) and which you saw and passed over, per style.
+    rows: {"idea", "liked", "ai_score", "ai_chosen"}. The same idea in the same style is updated, never duplicated.
+    """
+    conn = _conn()
+    try:
+        for r in rows:
+            conn.execute(
+                """INSERT INTO idea_feedback (style_key, idea, liked, ai_score, ai_chosen, brief) VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(style_key, idea) DO UPDATE SET liked = excluded.liked, ai_score = excluded.ai_score,
+                   ai_chosen = excluded.ai_chosen, brief = excluded.brief, updated_at = CURRENT_TIMESTAMP""",
+                (style_key, r["idea"], 1 if r["liked"] else 0, r.get("ai_score"), 1 if r.get("ai_chosen") else 0, brief),
+            )
+        conn.commit()
+        return len(rows)
+    finally:
+        conn.close()
+
+
+def get_idea_feedback(style_key: str, liked: bool, limit: int = 8) -> list[str]:
+    """Most recent ideas you did (liked=True) or did not pick, for one style."""
+    conn = _conn()
+    try:
+        rows = conn.execute(
+            "SELECT idea FROM idea_feedback WHERE style_key = ? AND liked = ? ORDER BY updated_at DESC, id DESC LIMIT ?",
+            (style_key, 1 if liked else 0, limit),
+        ).fetchall()
+        return [r["idea"] for r in rows]
+    finally:
+        conn.close()
+
+
+def count_idea_feedback(style_key: str) -> dict:
+    conn = _conn()
+    try:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(liked), 0) AS yes, COUNT(*) AS total FROM idea_feedback WHERE style_key = ?", (style_key,)
+        ).fetchone()
+        return {"liked": int(row["yes"]), "passed": int(row["total"]) - int(row["yes"])}
     finally:
         conn.close()
 

@@ -248,8 +248,11 @@ def index():
     # ── dialogs ────────────────────────────────────────────────────────────────────
     with ui.dialog() as ideas_dialog, ui.card().classes("glass").style("width:780px;max-width:94vw;max-height:88vh;overflow:auto"):
         ui.label("Ideas").classes("h2")
-        ui.label("Ranked by the AI's own critique (its opinion, not proof). Edit any line, or clear it to drop it. Only these are drawn."
+        ui.label("Ranked by the AI's own critique, which is only its opinion. Draw: tick the stickers you want made (any group). "
+                 "Best: tick the ones you think are the best, so the writer learns your taste for this style. You can edit any line."
                  ).classes("mut pad")
+        marked_label = ui.label("").classes("pad").style("font-weight:600;color:var(--cyan)")
+        learn_label = ui.label("").classes("mut pad")
         ideas_box = ui.column().classes("w-full gap-1 pad")
         with ui.row().classes("justify-end w-full pad"):
             ui.button("Use these ideas", on_click=lambda: ideas_dialog.close()).props("flat no-caps").classes("pill pri")
@@ -432,6 +435,26 @@ def index():
         refresh_refs()
 
     # ── ideas ────────────────────────────────────────────────────────────────────────
+    def idea_row(idea, pack_rows):
+        """One idea: Draw (make this sticker), Best (a sign of your taste, remembered per style), its text and the AI's critique."""
+        with ui.row().classes("w-full items-start no-wrap gap-2"):
+            with ui.column().classes("gap-0").style("flex:0 0 74px"):
+                draw_box = ui.checkbox("Draw", value=idea.chosen).props("dense").tooltip("Make this sticker")
+                best_box = ui.checkbox("Best", value=False).props("dense").tooltip("This is one of the best: teaches the idea writer your taste")
+            with ui.column().classes("gap-0 grow").style("min-width:0"):
+                inp = ui.input(value=idea.text).props("outlined dense").classes("w-full")
+                parts = ", ".join(f"{k.replace('_', ' ')} {v:.0f}" for k, v in idea.scores.items())
+                ui.label(f"AI score {idea.score:.1f} ({parts}). Weakness: {idea.weakness or 'none given'}").classes("mut")
+        draw_box.on_value_change(lambda _e: update_marked_count())
+        best_box.on_value_change(lambda _e: update_marked_count())
+        pack_rows.append({"draw": draw_box, "best": best_box, "inp": inp, "chosen": idea.chosen, "idea": idea})
+
+    def update_marked_count():
+        rows = [r for row in st["inputs"] for r in row]
+        draw = sum(1 for r in rows if r["draw"].value and (r["inp"].value or "").strip())
+        best = sum(1 for r in rows if r["best"].value)
+        marked_label.set_text(f"{draw} will be drawn · {best} marked best")
+
     def render_ideas():
         ideas_box.clear()
         st["inputs"] = []
@@ -439,26 +462,29 @@ def index():
         ideas_chip.set_visibility(bool(data))
         if not data:
             return
-        total = sum(len(row) for row in (data.chosen(i) for i in range(len(data.packs))))
+        total = sum(len(data.chosen(i)) for i in range(len(data.packs)))
         ideas_chip.set_text(f"{total} ideas ready ({len(data.packs)} pack{'s' if len(data.packs) != 1 else ''}): review")
+        counts = db.count_idea_feedback(preset_pick.value)
+        learn_label.set_text(f"Learning from your earlier marks for this style: {counts['liked']} best, {counts['passed']} passed over."
+                             if counts["liked"] + counts["passed"] else
+                             "No marks saved for this style yet. Mark the best ideas and the writer will learn your taste.")
         with ideas_box:
             for w in data.warnings:
                 ui.label("⚠ " + w).classes("text-xs").style("color:var(--danger)")
             for pi, cands in enumerate(data.packs):
-                row_inputs = []
+                pack_rows = []
                 if len(data.packs) > 1:
                     ui.label(f"Pack {pi + 1}").classes("h2").style("padding:8px 0 0")
+                ui.label("The AI's picks (ticked to draw)").classes("mut").style("padding-top:4px")
                 for idea in (c for c in cands if c.chosen):
-                    inp = ui.input(value=idea.text).props("outlined dense").classes("w-full")
-                    row_inputs.append(inp)
-                    parts = ", ".join(f"{k.replace('_', ' ')} {v:.0f}" for k, v in idea.scores.items())
-                    ui.label(f"AI score {idea.score:.1f} ({parts}). Weakness: {idea.weakness or 'none given'}").classes("mut")
-                st["inputs"].append(row_inputs)
+                    idea_row(idea, pack_rows)
                 rest = [c for c in cands if not c.chosen]
                 if rest:
-                    with ui.expansion(f"{len(rest)} ideas that did not make the cut").classes("w-full text-sm"):
-                        for c in rest:
-                            ui.label(f"{c.score:.1f}  {c.text}").classes("text-xs")
+                    ui.label("Ideas that did not make the cut").classes("mut").style("padding-top:10px")
+                    for idea in rest:
+                        idea_row(idea, pack_rows)
+                st["inputs"].append(pack_rows)
+        update_marked_count()
 
     async def write_ideas_click():
         brief = (text.value or "").strip()
@@ -473,7 +499,7 @@ def index():
         status.set_text("Writing and ranking ideas…")
         try:
             result = await run.io_bound(idea_writer.write_ideas, brief, int(count.value or 1), int(batches.value or 1),
-                                        style_text.value or None)
+                                        style_text.value or None, None, None, preset_pick.value)
         except Exception as e:
             ui.notify(f"Could not write ideas: {e}", type="negative", multi_line=True, timeout=10000)
             return
@@ -488,8 +514,21 @@ def index():
 
     def collect_packs() -> list[list[str]]:
         if write_ideas_sw.value:
-            return [[i.value.strip() for i in row if (i.value or "").strip()] for row in st["inputs"]]
+            return [idea_writer.choose_for_drawing([(r["draw"].value, r["inp"].value or "") for r in row])
+                    for row in st["inputs"]]
         return [parsed().prompts[:max(1, int(count.value or 1))]]
+
+    def remember_marks():
+        """Save the ideas you marked Best (and the rest you saw), per style, so the next ideas are written with your taste in mind."""
+        if not write_ideas_sw.value:
+            return
+        for row in st["inputs"]:
+            if not any(r["best"].value for r in row):
+                continue                                    # no Best marks in this pack: no opinion to learn from
+            db.save_idea_feedback(preset_pick.value, [
+                {"idea": (r["inp"].value or "").strip(), "liked": bool(r["best"].value), "ai_score": r["idea"].score,
+                 "ai_chosen": r["chosen"]} for r in row if (r["inp"].value or "").strip()
+            ], brief=(text.value or "").strip())
 
     # ── making stickers ──────────────────────────────────────────────────────────────
     async def create():
@@ -519,6 +558,7 @@ def index():
                        "write_ideas": bool(write_ideas_sw.value), "image_size": size_pick.value, "export_format": export_fmt.value,
                        "background": bg.value, "reference_mode": ref_mode.value, "style_preset": preset_pick.value})
         name = " ".join((text.value or "stickers").split())[:40] or "stickers"
+        remember_marks()
         try:
             nid = RUNNER.start_packs(name=name, packs=packs, variants=v, references=list(st["refs"]),
                                      reference_mode=ref_mode.value, apply_style=bool(apply_style.value), qa=bool(qa.value),

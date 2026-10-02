@@ -17,6 +17,7 @@ CSS = """
   --txt: #e6eef8; --mut: #8b9bb0; --cyan: #00e5ff; --violet: #b9a7ff; --danger: #ff8aa0;
   /* moved live by the script below: where the light streak sits on every panel */
   --aniso-angle: 118deg; --aniso-shift: 0%;
+  --aniso-strength: .25;   /* 1 = full spec; .25 = the light turned down 75% */
 }
 html, body, .q-page, .nicegui-content { background: transparent !important; }
 body {
@@ -48,12 +49,12 @@ body {
   box-shadow: 0 20px 60px rgba(0, 0, 0, .6), inset 0 1px 0 rgba(255, 255, 255, .14); padding: 6px 4px 14px; }
 .glass::before { content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: inherit; z-index: 0;
   background:
-    repeating-linear-gradient(100deg, rgba(255, 255, 255, .035) 0 1px, transparent 1px 4px),
-    linear-gradient(var(--aniso-angle), transparent calc(30% + var(--aniso-shift)), rgba(180, 220, 255, .18) calc(46% + var(--aniso-shift)),
-      rgba(220, 240, 255, .32) calc(50% + var(--aniso-shift)), rgba(180, 220, 255, .12) calc(54% + var(--aniso-shift)), transparent calc(70% + var(--aniso-shift)));
+    repeating-linear-gradient(100deg, rgba(255, 255, 255, calc(.035 * var(--aniso-strength) * 2)) 0 1px, transparent 1px 4px),
+    linear-gradient(var(--aniso-angle), transparent calc(30% + var(--aniso-shift)), rgba(180, 220, 255, calc(.18 * var(--aniso-strength))) calc(46% + var(--aniso-shift)),
+      rgba(220, 240, 255, calc(.32 * var(--aniso-strength))) calc(50% + var(--aniso-shift)), rgba(180, 220, 255, calc(.12 * var(--aniso-strength))) calc(54% + var(--aniso-shift)), transparent calc(70% + var(--aniso-shift)));
   animation: breathe 10s ease-in-out infinite; }
 .glass::after { content: ""; position: absolute; inset: 0; pointer-events: none; border-radius: inherit; z-index: 0;
-  background: linear-gradient(135deg, rgba(255, 255, 255, .22) 0%, rgba(255, 255, 255, .03) 38%, transparent 100%);
+  background: linear-gradient(135deg, rgba(255, 255, 255, calc(.22 * var(--aniso-strength))) 0%, rgba(255, 255, 255, calc(.03 * var(--aniso-strength))) 38%, transparent 100%);
   -webkit-mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); padding: 1px; }
 .glass > * { position: relative; z-index: 1; }
 @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: .7; } }   /* 1.0 <-> 0.7 over 10 s = 0.1 Hz */

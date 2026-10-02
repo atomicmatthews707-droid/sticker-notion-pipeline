@@ -17,6 +17,7 @@ from src.shared.banned import is_banned
 from src.shared.design import direction_for
 from src.shared.gemini_client import GeminiClient
 from src.shared.logger import get_logger
+from src.storage import db
 
 logger = get_logger(__name__)
 
@@ -46,6 +47,30 @@ class IdeaSet:
         return [i for i in self.packs[pack] if i.chosen]
 
 
+def choose_for_drawing(rows: list) -> list[str]:
+    """What gets drawn for one pack: the ideas whose Draw box is ticked, in the order shown. rows: (draw, text)."""
+    return [t.strip() for draw, t in rows if draw and t.strip()]
+
+
+def taste_examples(style_key: Optional[str], limit: int = 8) -> tuple[list[str], list[str]]:
+    """(ideas you marked as best, ideas you saw but passed over) for this style, newest first."""
+    if not style_key:
+        return [], []
+    return db.get_idea_feedback(style_key, True, limit), db.get_idea_feedback(style_key, False, limit)
+
+
+def _taste_block(style_key: Optional[str]) -> str:
+    liked, passed = taste_examples(style_key)
+    block = ""
+    if liked:
+        block += "Ideas this user marked as the BEST for this style (match this taste and sense of humour; do not copy them):\n"
+        block += "\n".join(f"- {t[:220]}" for t in liked) + "\n"
+    if passed:
+        block += "Ideas this user was shown but did NOT pick for this style (avoid this kind of idea):\n"
+        block += "\n".join(f"- {t[:220]}" for t in passed) + "\n"
+    return block
+
+
 def candidates_wanted(count: int) -> int:
     """Write more than needed so there is something to throw away."""
     return min(MAX_CANDIDATES, max(count + 3, math.ceil(count * 1.6)))
@@ -73,7 +98,8 @@ def _clean(raw, taken: list[str]) -> list[Idea]:
 
 
 def write_ideas(brief: str, count: int, packs: int = 1, style_md: Optional[str] = None,
-                client: Optional[GeminiClient] = None, niche_id: Optional[int] = None) -> IdeaSet:
+                client: Optional[GeminiClient] = None, niche_id: Optional[int] = None,
+                style_key: Optional[str] = None) -> IdeaSet:
     """For each pack: write candidates, score them, keep the best `count`. Later packs avoid what earlier ones used."""
     if not brief.strip():
         raise ValueError("Write a brief first.")
@@ -85,7 +111,7 @@ def write_ideas(brief: str, count: int, packs: int = 1, style_md: Optional[str] 
     result = IdeaSet()
     used: list[str] = []
     for n in range(1, max(1, packs) + 1):
-        ask = f"Brief: {brief.strip()}\nStyle the stickers will be drawn in: {direction.style}\n"
+        ask = f"Brief: {brief.strip()}\nStyle the stickers will be drawn in: {direction.style}\n" + _taste_block(style_key)
         if direction.avoid:
             ask += f"Avoid: {direction.avoid}\n"
         if used:

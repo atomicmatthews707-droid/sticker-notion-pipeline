@@ -141,3 +141,50 @@ def test_header_stats_count_this_runs_packs_stickers_and_cost(runner):
     db.log_spend("m", 0, 0, 1, 0.24, nid)
     s = runner.stats()
     assert s["images"] == 1 and s["spent"] == pytest.approx(0.24)
+
+
+# ── marking the best ideas, per style ───────────────────────────────────────────
+
+from src.generator import ideas as idea_writer  # noqa: E402
+
+
+def row(idea, liked, score=5.0, chosen=False):
+    return {"idea": idea, "liked": liked, "ai_score": score, "ai_chosen": chosen}
+
+
+def test_marks_are_saved_per_style_and_updated_not_duplicated():
+    db.save_idea_feedback("bold-text-bw", [row("ghost sheet joke", True), row("pumpkin pun", False, chosen=True)], brief="halloween")
+    db.save_idea_feedback("clipart-kawaii", [row("cute ghost", True)])
+    assert db.get_idea_feedback("bold-text-bw", True) == ["ghost sheet joke"]
+    assert db.get_idea_feedback("bold-text-bw", False) == ["pumpkin pun"]
+    assert db.get_idea_feedback("clipart-kawaii", True) == ["cute ghost"]
+    db.save_idea_feedback("bold-text-bw", [row("pumpkin pun", True)])                 # changed your mind
+    assert db.get_idea_feedback("bold-text-bw", True) == ["pumpkin pun", "ghost sheet joke"]
+    assert db.count_idea_feedback("bold-text-bw") == {"liked": 2, "passed": 0}
+
+
+def test_the_idea_writer_is_shown_your_taste_for_that_style_only():
+    db.save_idea_feedback("bold-text-bw", [row("skeleton waiting for a date", True), row("generic pumpkin", False, chosen=True)])
+    db.save_idea_feedback("clipart-kawaii", [row("cute fox", True)])
+    client = FakeText({"ideas": []})
+    idea_writer.write_ideas("halloween", 2, client=client, style_key="bold-text-bw")
+    ask = client.asked[0]
+    assert "marked as the BEST" in ask and "skeleton waiting for a date" in ask
+    assert "did NOT pick" in ask and "generic pumpkin" in ask and "cute fox" not in ask
+    plain = FakeText({"ideas": []})
+    idea_writer.write_ideas("halloween", 2, client=plain, style_key="never-rated")
+    assert "BEST" not in plain.asked[0] and "did NOT pick" not in plain.asked[0]
+
+
+def test_what_gets_drawn_is_exactly_the_draw_ticks_in_order():
+    shown = [(True, "ai pick one"), (True, "ai pick two"), (False, "reject that is funny")]
+    assert idea_writer.choose_for_drawing(shown) == ["ai pick one", "ai pick two"]
+    shown = [(False, "ai pick one"), (True, " ai pick two "), (True, "reject that is funny")]     # swapped one out, added a reject
+    assert idea_writer.choose_for_drawing(shown) == ["ai pick two", "reject that is funny"]
+    assert idea_writer.choose_for_drawing([(True, "  "), (False, "x")]) == []
+
+
+def test_the_light_streak_is_turned_down():
+    from src.ui import theme
+
+    assert "--aniso-strength: .25" in theme.CSS and "calc(.32 * var(--aniso-strength))" in theme.CSS
